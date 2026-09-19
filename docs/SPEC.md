@@ -157,8 +157,8 @@ Mathematical definition:
 $$
 \boxed{
 I_M(x,y)=
-\operatorname{median}
-\{p_{00},p_{01},...,p_{22}\}
+\text{median}
+\{p_{00},p_{01},\dots,p_{22}\}
 }
 $$
 
@@ -213,9 +213,9 @@ K_y=
 $$
 
 $$
-G_x=K_x*I_M
+G_x=K_{x}*I_M
 \qquad
-G_y=K_y*I_M
+G_y=K_{y}*I_M
 $$
 
 For the 3x3 window:
@@ -286,13 +286,11 @@ range: 0–2040
 Binary thresholding:
 
 $$
-\boxed{
 B(x,y)=
 \begin{cases}
-255,&M(x,y)\ge T\\
-0,&M(x,y)<T
+255, & M(x,y) \ge T \\
+0, & M(x,y) < T
 \end{cases}
-}
 $$
 
 Specified threshold:
