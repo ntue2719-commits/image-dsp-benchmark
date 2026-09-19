@@ -64,9 +64,9 @@ Salt & Pepper Noise
      │     │
      ▼     ▼
     Gx     Gy
-     \\   /
-      \\ /
-       ▼
+     \     /
+      \   /
+        ▼
   |Gx| + |Gy|
         │
         ▼
@@ -80,86 +80,241 @@ Salt & Pepper Noise
 
 ### 3.1 RGB → Grayscale
 
-```
+Standard luminance conversion:
+
+$$
 Y = 0.299R + 0.587G + 0.114B
+$$
+
+Hardware fixed-point approximation:
+
+$$
+\boxed{
+Y = \left\lfloor
+\frac{77R + 150G + 29B}{256}
+\right\rfloor
+}
+$$
+
+Since \(256=2^8\):
+
+```text
+Y = (77*R + 150*G + 29*B) >> 8
 ```
 
-Integer approximation used in C/RTL:
+Output: `uint8`, range `0–255`.
 
-```
-Y ≈ (77*R + 150*G + 29*B) / 256
-```
-
-Output: `uint8`, range 0–255.
+---
 
 ### 3.2 Salt-and-Pepper Noise
 
-Generated **offline in Python** and saved once as `noisy.hex` — boards do
-**not** generate their own random noise, to keep results comparable.
+Noise is generated **offline in Python** and stored as `noisy.hex`.
+The FPGA does not generate random noise.
 
-```
+```text
 noise_probability = 5%
-seed = 12345
-0   → pepper
-255 → salt
+seed              = 12345
+
+pepper = 0
+salt   = 255
 ```
+
+For \(r\sim U(0,1)\):
+
+$$
+\boxed{
+I_N =
+\begin{cases}
+0, & r < 0.025\\
+255, & 0.025 \le r < 0.05\\
+I, & r \ge 0.05
+\end{cases}
+}
+$$
+
+Thus:
+
+```text
+P(pepper) = 2.5%
+P(salt)   = 2.5%
+P(noise)  = 5%
+```
+
+---
 
 ### 3.3 Median Filter 3×3
 
-9 pixels → compare-swap sorting network → take the 5th (median) value.
+Nonlinear order-statistic spatial filter.
 
-```
+```text
 p00 p01 p02
 p10 p11 p12
 p20 p21 p22
 ```
 
-Example:
+Mathematical definition:
 
-```
-12 15 18          Sorted: 12 13 14 15 16 17 18 19 255
-13 255 17                              ↑
-14 16 19                            median = 16
+$$
+\boxed{
+I_M(x,y)=
+\operatorname{median}
+\{p_{00},p_{01},...,p_{22}\}
+}
+$$
+
+After sorting:
+
+$$
+v_{(1)}\le v_{(2)}\le...\le v_{(9)}
+$$
+
+the output is:
+
+$$
+\boxed{I_M=v_{(5)}}
+$$
+
+Hardware implementation:
+
+```text
+9 pixels
+   ↓
+compare-swap sorting network
+   ↓
+5th ordered value
 ```
 
-DSP class: nonlinear spatial filtering.
+---
 
 ### 3.4 Sobel Filter 3×3
 
-Runs **on the median-filtered image**, using a new 3×3 window.
+Applied to the **median-filtered image**.
 
+Sobel kernels:
+
+$$
+\boxed{
+K_x=
+\begin{bmatrix}
+-1&0&1\\
+-2&0&2\\
+-1&0&1
+\end{bmatrix}
+}
+\qquad
+\boxed{
+K_y=
+\begin{bmatrix}
+-1&-2&-1\\
+0&0&0\\
+1&2&1
+\end{bmatrix}
+}
+$$
+
+$$
+G_x=K_x*I_M
+\qquad
+G_y=K_y*I_M
+$$
+
+For the 3x3 window:
+
+$$
+\boxed{
+G_x=-p_{00}+p_{02}-2p_{10}+2p_{12}-p_{20}+p_{22}
+}
+$$
+
+$$
+\boxed{
+G_y=-p_{00}-2p_{01}-p_{02}
++p_{20}+2p_{21}+p_{22}
+}
+$$
+
+Hardware implementation uses add/subtract and shift operations:
+
+```text
+2*p = p << 1
 ```
-Sobel X (Gx)          Sobel Y (Gy)
--1  0  1              -1 -2 -1
--2  0  2               0  0  0
--1  0  1               1  2  1
 
-Gx = -p00 + p02 - 2*p10 + 2*p12 - p20 + p22
-Gy = -p00 - 2*p01 - p02 + p20 + 2*p21 + p22
-```
+For 8-bit input:
 
-> If the original spec document shows a different-looking Gy matrix (an
-> equation-editor-to-text conversion artifact), the numeric Gx/Gy formulas
-> above are the single source of truth — they match the golden model, C,
-> and RTL.
+$$
+|G_x|_{\max}=|G_y|_{\max}=1020
+$$
+
+so signed 11-bit gradient values are sufficient.
+
+---
 
 ### 3.5 Gradient Magnitude
 
-No square root (to avoid floating-point / sqrt hardware):
+The standard Euclidean gradient magnitude is:
 
+$$
+M_{L2}=
+\sqrt{G_x^2+G_y^2}
+$$
+
+To avoid squaring and square-root hardware, this design uses the \(L_1\) approximation:
+
+$$
+\boxed{
+M=|G_x|+|G_y|
+}
+$$
+
+Maximum value:
+
+$$
+M_{\max}=1020+1020=2040
+$$
+
+Therefore:
+
+```text
+M: unsigned 12-bit
+range: 0–2040
 ```
-M = |Gx| + |Gy|
-```
+
+---
 
 ### 3.6 Threshold
 
-```
+Binary thresholding:
+
+$$
+\boxed{
+B(x,y)=
+\begin{cases}
+255,&M(x,y)\ge T\\
+0,&M(x,y)<T
+\end{cases}
+}
+$$
+
+Specified threshold:
+
+```text
 THRESHOLD = 100
-M >= 100 → 255
-M <  100 → 0
 ```
 
-Output: Binary Edge Image.
+Therefore:
+
+$$
+\boxed{
+B=
+\begin{cases}
+255,&|G_x|+|G_y|\ge100\\
+0,&|G_x|+|G_y|<100
+\end{cases}
+}
+$$
+
+Output: `uint8` binary edge image (`0` or `255`).
+
 
 ## 4. Input Specification
 
