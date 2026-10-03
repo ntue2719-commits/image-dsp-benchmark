@@ -1,54 +1,96 @@
-module line_buffer #( 
-    parameter IMAGE_WIDTH = 512
-) ( 
-    input clk,
-    input rst, // rst = 1 (get module back to start state)
-    input pixel_valid,   // identify pixel_in có valid or not  (valid = 1)
-    input [7:0] pixel_in,   // 8 bit = 0 -> 255 
-    output reg pixel_valid_out, // top_pixel,mid_pixel,_bot_pixel có valid hay ko 
-    output reg [7:0] top_pixel,    
-    output reg [7:0] middle_pixel,
-    output reg [7:0] bottom_pixel
-);
+`timescale 1ns / 1ps
+//////////////////////////////////////////////////////////////////////////////////
+// Company: 
+// Engineer: 
+// 
+// Create Date: 09/28/2026 09:14:41 PM
+// Design Name:
+// Module Name: line_buffer
+// Project Name: Image DSP
+// Target Devices: 
+// Tool Versions: 
+// Description: 
+// 
+// Dependencies: 
+// 
+// Revision:
+// Revision 0.01 - File Created
+// Additional Comments:
+// 
+//////////////////////////////////////////////////////////////////////////////////
+`default_nettype none
 
-reg [7:0] line1 [0:IMAGE_WIDTH - 1];
-reg [7:0] line2 [0:IMAGE_WIDTH - 1];
-
-reg [15:0] col;
-
-integer i;
-
-always @(posedge clk) begin
-    if (rst) begin            // reset = 1 đưa toàn bộ về trạng thái ban đầu 
-    col <= 0;
-    pixel_valid_out <= 0;
-    top_pixel <= 0;
-    middle_pixel <= 0;
-    bottom_pixel <= 0;
-
-for ( i = 0; i < IMAGE_WIDTH; i = i + 1) begin
-    line1[i] <= 0;
-    line2[i] <= 0;
-    end
-end 
-else begin      // rst = 0
-    pixel_valid_out <= pixel_valid;         // p_v = 1 --> p_v_o = 1 or p_v = 0 --> p_v_o = 0
-
-    if (pixel_valid) begin    // pixel_valid = 1
-    top_pixel <= line2[col];
-    middle_pixel <= line1[col];
-    bottom_pixel <= pixel_in;
-
-    line2[col] <= line1[col];
-    line1[col] <= pixel_in;
-
-    if (col == IMAGE_WIDTH - 1)
-        col <= 0;
-    else 
-        col <= col + 1;
-                 end
+module line_buffer #(
+    parameter IMAGE_WIDTH = 512,
+    parameter COORD_W =12
+)(
+    input wire                 i_clk,
+    input wire                 i_rst,
+    input wire                 i_valid,
+    input wire [7:0]           i_pixel,
+    input wire [COORD_W -1 :0] i_x,
+    input wire [COORD_W -1 :0] i_y,
+    
+    output reg                 o_valid,
+    output reg [7:0]           o_top,
+    output reg [7:0]           o_mid,
+    output reg [7:0]           o_bot,
+    output reg [COORD_W -1 :0] o_x,
+    output reg [COORD_W -1 :0] o_y 
+    );
+    
+    function integer clog2;
+        input integer value;
+        integer v;
+        begin
+            v = value -1;
+            clog2 = 0;
+            while (v>0) begin
+                clog2= clog2 +1;
+                v = v >> 1;
+            end        
+        end    
+    endfunction
+    
+    localparam ADDR_W = clog2(IMAGE_WIDTH);
+    
+    reg [7:0] line1 [0: IMAGE_WIDTH -1];
+    reg [7:0] line2 [0: IMAGE_WIDTH -1];
+    
+    reg [ADDR_W - 1:0] col;
+    
+    always @ (posedge i_clk) begin
+        if(i_rst) begin
+            col <= {ADDR_W{1'b0}};
+            
+            o_top <= 8'd0;
+            o_mid <= 8'd0;
+            o_bot <= 8'd0;
+            
+            o_x <= {COORD_W{1'b0}}; 
+            o_y <= {COORD_W{1'b0}};
+            
+            o_valid <= 1'b0;
         end
-    end
-endmodule 
-
-
+        else begin
+            o_valid <= i_valid;
+            if(i_valid) begin
+                o_top <= line2[col];
+                o_mid <= line1[col];
+                o_bot <= i_pixel;
+                
+                o_x <= i_x;
+                o_y <= i_y;
+                
+                line2[col] <= line1[col];
+                line1[col] <= i_pixel;
+                
+                if(col == IMAGE_WIDTH -1)
+                    col <= {ADDR_W{1'b0}};
+                else
+                    col <= col + 1;
+            end
+        end
+    end   
+endmodule
+`default_nettype wire
