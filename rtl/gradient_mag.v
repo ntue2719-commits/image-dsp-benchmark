@@ -7,8 +7,8 @@ module gradient_mag (
 );
 
 wire [10:0] w_abs_gx, w_abs_gy;
-    assign abs_gx = i_gx[10] ? -i_gx : i_gx;
-    assign abs_gy = i_gy[10] ? -i_gy : i_gy;
+    assign w_abs_gx = i_gx[10] ? -i_gx : i_gx;
+    assign w_abs_gy = i_gy[10] ? -i_gy : i_gy;
 always @(*) begin
     if(i_sobel_result_valid) begin
         o_mag = w_abs_gx + w_abs_gy;
