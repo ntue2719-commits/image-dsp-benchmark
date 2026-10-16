@@ -7,6 +7,7 @@ Cach dung:
     python hex2img.py data.hex --width 128 --height 64
     python hex2img.py data.hex --channels 3 --width 100
     python hex2img.py data.hex --invert
+    python hex2img.py ..\results\640x480\rtl_result.hex --width 640 --height 480 
 """
 
 import argparse
