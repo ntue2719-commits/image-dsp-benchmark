@@ -1,65 +1,194 @@
 # Embedded DSP Image Processing Benchmark
 
-[![Verilog](https://img.shields.io/badge/RTL-Verilog--2001-blue)](https://en.wikipedia.org/wiki/Verilog)
-[![Verification](https://img.shields.io/badge/verification-Python%20%3D%3D%20C%20%3D%3D%20RTL-brightgreen)](#verification)
+[![RTL](https://img.shields.io/badge/RTL-Verilog--2001-blue)](https://en.wikipedia.org/wiki/Verilog)
+[![Phase 1](https://img.shields.io/badge/Phase%201-PASS-brightgreen)](#current-status)
+[![Phase 2](https://img.shields.io/badge/Phase%202-Accelerator%20Architecture-orange)](#phase-2--structured-accelerator)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](#license)
 
-A classical (non-AI, non-FFT, integer-only) image DSP pipeline — **salt-and-pepper
-noise removal + Sobel edge detection** — implemented three times (Python golden
-model, C, and synthesizable Verilog-2001 RTL) and benchmarked across three
-embedded platforms: **Orange Pi Zero 3W**, **AMD Kria KR260**, and **EBAZ4205
-(Zynq-7010)**.
+A classical integer-only image-processing project for **salt-and-pepper noise removal and Sobel edge detection**, implemented as a software reference model and synthesizable FPGA RTL.
 
-The target verification flow is:
+The project targets:
 
-`Python == C == RTL` with mismatch = 0.
+- **Orange Pi Zero 3W** — CPU baseline and web demonstration
+- **EBAZ4205 / Zynq-7010** — ARM PS + FPGA PL
+- **AMD Kria KR260** — ARM PS + FPGA PL
+
+Final verification target:
 
 ```text
-Original RGB → Grayscale → Salt & Pepper Noise → 3x3 Median → Sobel 3x3
-             → |Gx| + |Gy| → Threshold → Binary Edge Image
+Python == C == RTL
+mismatch = 0
 ```
 
-## Contents
+Current verified RTL status:
 
-- [Features](#features)
-- [RTL Architecture](#rtl-architecture)
-- [Repository Structure](#repository-structure)
-- [Requirements](#requirements)
-- [Quick Start](#quick-start)
-- [Verification](#verification)
-- [Benchmarking](#benchmarking)
-- [Documentation](#documentation)
-- [Contributing](#contributing)
-- [License](#license)
+```text
+Python == RTL
+mismatch = 0
+PASS
+```
 
-## Features
+---
 
-- Deterministic salt-and-pepper noise generation (fixed seed, reproducible across runs)
-- 3×3 median filter (compare-swap sorting network) + 3×3 Sobel edge detector
-- Fixed-point / integer-only math throughout — no floating point in RTL
-- Golden-model-driven verification pipeline (`Python == C == RTL`)
-- Parameterized RTL (`IMAGE_WIDTH`, `IMAGE_HEIGHT`), non-square image support
-- CPU vs FPGA benchmarking across 3 boards (latency, FPS, LUT/FF/BRAM/DSP, Fmax)
+## DSP Pipeline
+
+```text
+Original RGB Image
+        |
+        v
+    Grayscale
+        |
+        v
+Salt & Pepper Noise
+        |
+        v
+   Median 3x3
+        |
+        v
+    Sobel 3x3
+      |     |
+      v     v
+     Gx     Gy
+       \   /
+         v
+    |Gx| + |Gy|
+         |
+         v
+    Threshold
+         |
+         v
+ Binary Edge Image
+```
+
+The RTL uses integer arithmetic only.
+
+---
+
+## Current Status
+
+### Phase 1 — Verified Streaming DSP Core
+
+**Status: COMPLETE**
+
+The standalone RTL pipeline has been implemented and verified against the Python golden model.
+
+```text
+W=512 H=512
+outputs=258064
+expected=258064
+errors=0
+PASS
+```
+
+Verified result:
+
+```text
+Python == RTL
+mismatch = 0
+```
+
+Phase 1 datapath:
+
+```text
+image_dsp_top
+│
+├── line_buffer #1
+├── window_3x3 #1
+├── median_3x3
+├── line_buffer #2
+├── window_3x3 #2
+├── sobel_3x3
+├── gradient_mag
+└── threshold
+```
+
+The Phase 1 core is now treated as a **frozen verified compute block**.
+
+---
+
+## Phase 2 — Structured Accelerator
+
+**Status: CURRENT**
+
+Phase 2 wraps the verified DSP core with a structured accelerator architecture.
+
+```text
+                    Host / Future AXI
+                           |
+                           v
+                     +-----------+
+                     |  Arbiter  |
+                     +-----------+
+                           |
+                           v
+                     +-----------+
+                     | FSM_CTRL  |
+                     +-----------+
+                       |       |
+                       v       v
+                  +--------+ +--------+
+                  | Input  | | Output |
+                  | Buffer | | Buffer |
+                  +--------+ +--------+
+                       |       ^
+                       v       |
+                  +----------------+
+                  |   Datapath     |
+                  | Verified Core  |
+                  +----------------+
+```
+
+Block responsibilities:
+
+```text
+Arbiter
+    = command authority and high-level ownership
+
+FSM Controller
+    = execution sequencing and frame lifecycle
+
+Input / Output
+    = data transport and buffering
+
+Datapath
+    = verified Median + Sobel processing core
+```
+
+Recommended FSM flow:
+
+```text
+IDLE
+  |
+  v
+LOAD
+  |
+  v
+WORK
+  |
+  v
+DRAIN
+  |
+  v
+DONE
+```
+
+Detailed Phase 2 interfaces, signals, state behavior, handshakes, and verification rules are defined in:
+
+[`docs/SPEC_PHASE2.md`](docs/SPEC_PHASE2.md)
+
+---
 
 ## RTL Architecture
 
-### Top-Level Interface
-
-The RTL core is exposed through a compact streaming interface. Input pixels are
-accepted with `i_valid`, while the processed pixel, output-valid flag, image
-coordinates, and gradient magnitude are exposed on the output side.
-
-![image_dsp_top top-level interface](docs/images/image_dsp_top_interface.png)
-
-Main interface:
+### Phase 1 Top-Level Interface
 
 ```text
 Inputs
 ------
 i_clk
-i_rst_n
-i_pixel[7:0]
+i_rst
 i_valid
+i_pixel[7:0]
 
 Outputs
 -------
@@ -70,194 +199,241 @@ o_y[11:0]
 o_mag[11:0]
 ```
 
-### Internal DSP Pipeline
+![image_dsp_top top-level interface](docs/images/image_dsp_top_interface.png)
 
-`image_dsp_top.v` connects the line-buffer/window-generation logic to the
-Median, Sobel, gradient-magnitude, and threshold stages.
+### Internal DSP Pipeline
 
 ![image_dsp_top internal DSP pipeline](docs/images/image_dsp_pipeline.png)
 
-High-level RTL data path:
+Coordinates and valid timing are propagated alongside the pixel stream so that
+the final output remains spatially aligned with the source image.
 
-```text
-i_pixel / i_valid
-        |
-        v
-+----------------+
-|  line_buffer   |
-+----------------+
-        |
-        v
-+----------------+
-|   window_3x3   |
-+----------------+
-        |
-        v
-+----------------+
-|   median_3x3   |
-+----------------+
-        |
-        v
-+----------------+
-|   sobel_3x3    |
-+----------------+
-        |
-        v
-+----------------+
-|  gradient_mag  |
-+----------------+
-        |
-        v
-+----------------+
-|   threshold    |
-+----------------+
-        |
-        v
-o_pixel / o_valid / o_x / o_y / o_mag
-```
-
-The RTL keeps the image coordinates aligned with the streaming data so that
-`o_valid` is asserted only inside the final valid Sobel region.
+---
 
 ## Repository Structure
 
 ```text
 image-dsp-benchmark/
+│
 ├── README.md
+│
 ├── docs/
-│   ├── SPEC.md
+│   ├── SPEC_PHASE1.md
+│   ├── SPEC_PHASE2.md
 │   └── images/
-│       ├── image_dsp_top_interface.png
-│       └── image_dsp_pipeline.png
-├── data/                  # HEX golden vectors and input images
-├── python/                # golden model + noise/median/sobel + verify/benchmark
-├── c/                     # CPU implementation
-├── rtl/                   # Verilog-2001 RTL modules
-├── tb/                    # RTL testbenches
+│
+├── python/
+│
+├── c/
+│
+├── rtl/
+│
+├── tb/
+│
 ├── fpga/
-│   ├── ebaz/              # EBAZ4205 synthesis project
-│   └── kr260/             # KR260 synthesis project
-└── results/               # benchmark.csv + plots
+│   ├── ebaz/
+│   └── kr260/
+│
+└── results/
 ```
 
-## Requirements
+### Folder Responsibilities
 
-| Component | Tool |
+| Folder | Purpose |
 | --- | --- |
-| Golden model | Python 3.x, NumPy |
-| CPU implementation | GCC / Clang (C99+) |
-| RTL simulation | Icarus Verilog / Verilator / Vivado Simulator |
-| FPGA synthesis | Vivado (EBAZ4205, KR260) |
+| `docs/` | Technical specifications and architecture documentation for each development phase |
+| `docs/images/` | RTL schematics, block diagrams, and documentation figures |
+| `python/` | Official software golden model, image preprocessing, reference DSP algorithms, verification utilities, and HEX/image conversion tools |
+| `c/` | CPU implementation used for software acceleration experiments and CPU-vs-FPGA benchmarking |
+| `rtl/` | Synthesizable Verilog-2001 implementation of the DSP pipeline and Phase 2 accelerator modules |
+| `tb/` | RTL simulation testbenches, golden-vector loading, output checking, and regression tests |
+| `fpga/` | Board-specific Vivado integration, constraints, synthesis, implementation, and hardware deployment files |
+| `fpga/ebaz/` | EBAZ4205 / Zynq-7010 implementation files |
+| `fpga/kr260/` | AMD Kria KR260 implementation files |
+| `results/` | Golden outputs, RTL results, converted images, benchmark tables, and performance plots |
 
-## Quick Start
+The Python execution guide is kept separately in:
 
-```bash
-# 1. Generate golden reference data
-cd python
-python golden_model.py
+[`python/README.md`](python/README.md)
 
-# Example custom resolution
-python golden_model.py --width 640 --height 480
-
-# 2. Build and run the C implementation
-cd ../c
-make
-./benchmark ../data/noisy.hex
-
-# 3. Simulate the RTL and verify against the golden model
-cd ../tb
-make sim
-python ../python/verify.py --expected ../data/expected.hex --actual rtl_result.hex
-```
-
-`golden_model.py` produces pipeline data as ASCII `.hex` files. The RTL
-testbench loads the test vectors with Verilog's `$readmemh`.
-
-### Using a real image
-
-To run the golden model against a real photo instead of the built-in test
-pattern:
-
-1. Download any image, preferably one with sharp edges/detail.
-2. Rename it `input.png` or `input.jpg`.
-3. Place it in `python/`, next to `golden_model.py`.
-4. Run `python golden_model.py`.
-
-The script generates debug images such as:
-
-```text
-debug_gray.png
-debug_noisy.png
-debug_median.png
-debug_gradient.png
-debug_expected.png
-```
-
-See [`docs/SPEC.md`](docs/SPEC.md) for exact algorithm formulas, coordinate
-convention, valid-region rules, and RTL module interfaces.
+---
 
 ## Verification
 
-Every implementation must pass:
-
-- Python golden model == C output (mismatch = 0)
-- Python golden model == RTL output (mismatch = 0)
-- Non-square test case (e.g. 640×480) passes
-- Intermediate median-stage output verified separately from final output
-- Expected output count is `(W-4) × (H-4)` for the final Sobel valid region
-
-Confirmed RTL baseline:
+The project follows golden-model-driven verification.
 
 ```text
-W=512 H=512 GAPS=0 frames=1
-outputs=258064 (expected 258064)
-errors=0
-PASS
+Python Golden Model
+        |
+        +--------------------+
+        |                    |
+        v                    v
+    C Output             RTL Output
+        |                    |
+        +---------+----------+
+                  |
+                  v
+              Compare
 ```
 
-## Benchmarking
+Verification requirements:
 
-| Case | Board | Compute | Language |
+- Python vs RTL mismatch = 0
+- Python vs C mismatch = 0
+- final target: `Python == C == RTL`
+- non-square images must be supported
+- final valid output count must be:
+
+```text
+(W - 4) * (H - 4)
+```
+
+Examples:
+
+| Resolution | Valid outputs |
+| --- | ---: |
+| 64x64 | 3600 |
+| 512x512 | 258064 |
+| 640x480 | 302736 |
+
+Phase 1 is already verified.
+
+Phase 2 must preserve the same bit-exact output.
+
+---
+
+## Benchmark Targets
+
+| Case | Board | Compute | Implementation |
 | --- | --- | --- | --- |
-| A | Zero 3W | CPU | Python |
-| B | Zero 3W | CPU | C |
-| C | EBAZ4205 | ARM CPU | C |
-| D | KR260 | ARM CPU | C |
-| E | EBAZ4205 | FPGA | Median + Sobel + Threshold |
-| F | KR260 | FPGA | Median + Sobel + Threshold |
+| A | Orange Pi Zero 3W | CPU | Python |
+| B | Orange Pi Zero 3W | CPU | C |
+| C | EBAZ4205 | ARM PS | C |
+| D | KR260 | ARM PS | C |
+| E | EBAZ4205 | FPGA PL | RTL Accelerator |
+| F | KR260 | FPGA PL | RTL Accelerator |
 
-Metrics:
+### CPU Metrics
 
-- CPU: Median latency, Sobel latency, total DSP latency, FPS, CPU utilization, RAM
-- FPGA: kernel latency, end-to-end latency, FPS, LUT, FF, BRAM, DSP, Fmax
+- Median latency
+- Sobel latency
+- total DSP latency
+- FPS
+- CPU utilization
+- RAM usage
 
-Results are stored in:
+### FPGA Metrics
 
-- [`results/benchmark.csv`](results/benchmark.csv)
-- [`results/plots/`](results/plots/)
+- kernel latency
+- end-to-end latency
+- FPS
+- LUT
+- FF
+- BRAM
+- DSP
+- Fmax
+
+---
+
+## Development Roadmap
+
+```text
+Phase 1
+Standalone Verified DSP Core
+[DONE]
+
+        |
+        v
+
+Phase 2
+Arbiter + FSM + Input/Output + Datapath
+[CURRENT]
+
+        |
+        v
+
+Phase 3
+AXI / PS-PL Integration
+
+        |
+        v
+
+Phase 4
+CPU vs FPGA Benchmark
+
+        |
+        v
+
+Phase 5
+Web Demonstration
+```
+
+---
 
 ## Documentation
 
-- [`docs/SPEC.md`](docs/SPEC.md) — full technical specification:
-  - algorithm
-  - datatypes
-  - coordinate convention
-  - valid-region rules
-  - RTL module specifications
-  - latency budget
-  - FPGA architecture
-  - Definition of Done
+### Phase 1 Specification
+
+[`docs/SPEC_PHASE1.md`](docs/SPEC_PHASE1.md)
+
+Defines:
+
+- DSP algorithms
+- datatype rules
+- coordinate convention
+- border and valid-region rules
+- streaming RTL behavior
+- module interfaces
+- latency budget
+- Phase 1 verification contract
+
+### Phase 2 Specification
+
+[`docs/SPEC_PHASE2.md`](docs/SPEC_PHASE2.md)
+
+Defines:
+
+- Arbiter behavior
+- FSM architecture
+- Input / Output buffering
+- verified Datapath wrapper
+- module interfaces
+- signal definitions
+- handshake rules
+- state transitions
+- error handling
+- synthesis requirements
+- Phase 2 verification plan
+- future AXI integration
+
+### Python Usage
+
+[`python/README.md`](python/README.md)
+
+Contains the commands for:
+
+- generating golden data
+- selecting image resolution
+- verifying RTL output
+- converting `.hex` files to `.png`
+
+---
 
 ## Contributing
 
-Commit message rules, branch conventions, and module-development order are in
-[`CONTRIBUTING.md`](CONTRIBUTING.md).
+This repository uses Conventional Commits.
 
-This repository uses
-[Conventional Commits](https://www.conventionalcommits.org/)
-scoped to the touched module, for example:
+Examples:
 
 ```text
-feat(rtl): add median_3x3.v compare-swap network
+feat(rtl): add median 3x3 compare-swap network
+feat(accel): add image DSP FSM controller
+test(accel): add accelerator regression test
+docs: update Phase 2 architecture
 ```
 
+---
+
+## License
+
+MIT License.
