@@ -154,9 +154,7 @@ wire [7:0] w2_p00, w2_p01, w2_p02, w2_p10, w2_p11, w2_p12, w2_p20, w2_p21, w2_p2
         end
     end
 
-    // ------------------------------------------------------------------
     // Magnitude + threshold (combinational, aligned with the Sobel register)
-    // ------------------------------------------------------------------
     wire grad_valid;
 
     gradient_mag u_grad (
