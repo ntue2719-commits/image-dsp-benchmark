@@ -31,6 +31,7 @@ module gradient_mag (
     output wire               o_grad_result_valid
 );
 
+    //Use ~i_gx + 1 -> convert a negative two's complement value to its abosulate value
     wire [10:0] w_abs_gx = i_gx[10] ? (~i_gx + 11'd1) : i_gx;
     wire [10:0] w_abs_gy = i_gy[10] ? (~i_gy + 11'd1) : i_gy;
 
