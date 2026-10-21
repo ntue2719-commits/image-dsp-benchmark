@@ -1,1253 +1,120 @@
-# Technical Specification — Phase 2 Structured DSP Accelerator
+# Technical Specification — Phase 2 AXI Memory-Mapped Image DSP Accelerator
 
-> This document defines the Phase 2 architecture of the Embedded DSP Image Processing Benchmark.
->
-> Phase 1 — the standalone streaming DSP core — has been completed and verified:
->
-> ```text
-> Python Golden Model == RTL
-> mismatch = 0
-> PASS
-> ```
->
-> Phase 2 must preserve all Phase 1 algorithm, datatype, coordinate, border, and valid-region behavior.
+> **Status:** Phase 2 architecture specification  
+> **Phase 1 status:** COMPLETE — `Python == RTL`, mismatch = 0  
+> **Purpose:** Define a strict, implementation-ready contract for the AXI-controlled `dsp_image` accelerator.
 
 ---
 
-# 1. Phase 2 Objective
+# 1. Normative Language
 
-Phase 2 converts the already-verified Phase 1 streaming DSP core into a structured hardware accelerator.
+The terms **MUST**, **MUST NOT**, **SHALL**, **SHALL NOT**, and **MAY** are normative.
 
-The architecture shall contain five main functional blocks:
+If RTL behavior differs from this document, the RTL is considered incorrect until this specification is intentionally revised.
 
-```text
-1. Arbiter
-2. FSM Controller
-3. Input Interface / Buffer
-4. DSP Datapath
-5. Output Interface / Buffer
-```
+---
 
-Top-level hierarchy:
+# 2. Phase 2 Hierarchy
+
+Phase 2 has two levels.
 
 ```text
-image_dsp_accel_top
+dsp_image_axi_wrapper
 │
-├── image_dsp_arbiter
-├── image_dsp_fsm_ctrl
-├── image_dsp_input
-├── image_dsp_datapath
-└── image_dsp_output
+├── Vivado-generated AXI4-Lite slave logic
+│
+└── dsp_image_top
+    ├── dsp_image_arbiter
+    ├── dsp_image_fsm_ctrl
+    ├── dsp_image_input_memory
+    ├── dsp_image_datapath
+    └── dsp_image_output_memory
 ```
 
-The design must remain:
+System view:
 
 ```text
-Verilog-2001
-synthesizable
-parameterized
-deterministic
-bit-exact with Phase 1
+ARM PS
+  |
+AXI4-Lite
+  |
+  v
+dsp_image_axi_wrapper
+  |
+  | internal request/response bus
+  v
+dsp_image_top
+  |
+  +--> Arbiter
+  +--> FSM & CTRL
+  +--> Input Memory
+  +--> Datapath
+  +--> Output Memory
 ```
 
-SystemVerilog constructs are not permitted in the RTL baseline.
+**No DMA is part of Phase 2.**
 
 ---
 
-# 2. Phase 1 Completion Contract
+# 3. Phase 1 Frozen Contract
 
-Phase 1 implements:
+`dsp_image_datapath` SHALL instantiate or wrap the already-verified Phase 1 streaming core.
+
+Phase 1 algorithm:
 
 ```text
-input pixel stream
-        |
-        v
 line_buffer #1
-        |
-        v
-window_3x3 #1
-        |
-        v
-median_3x3
-        |
-        v
-line_buffer #2
-        |
-        v
-window_3x3 #2
-        |
-        v
-sobel_3x3
-        |
-        v
-gradient_mag
-        |
-        v
-threshold
-        |
-        v
-output edge stream
+-> window_3x3 #1
+-> median_3x3
+-> line_buffer #2
+-> window_3x3 #2
+-> sobel_3x3
+-> gradient_mag
+-> threshold
 ```
 
-The following behavior is frozen for Phase 2.
+The following behavior MUST remain unchanged.
 
-## 2.1 Median Filter
-
-For:
+Median valid region:
 
 ```text
-p00 p01 p02
-p10 p11 p12
-p20 p21 p22
+x = 1 ... W-2
+y = 1 ... H-2
+count = (W-2)*(H-2)
 ```
 
-the output is the fifth ordered value after sorting the nine pixels:
+Final Sobel valid region:
 
 ```text
-median = sort(p00...p22)[4]
+x = 2 ... W-3
+y = 2 ... H-3
+count = (W-4)*(H-4)
 ```
 
-Valid median region:
+Sobel:
 
 ```text
-x in [1, W-2]
-y in [1, H-2]
-
-size = (W-2)*(H-2)
-```
-
----
-
-## 2.2 Sobel Filter
-
-The Sobel stage consumes the median-filtered stream.
-
-```text
-Gx = -p00 + p02
-     -2*p10 + 2*p12
-     -p20 + p22
+Gx = -p00 + p02 - 2*p10 + 2*p12 - p20 + p22
 
 Gy = -p00 - 2*p01 - p02
      +p20 + 2*p21 + p22
 ```
 
-Final valid region:
-
-```text
-x in [2, W-3]
-y in [2, H-3]
-
-size = (W-4)*(H-4)
-```
-
-For 512x512:
-
-```text
-valid outputs = 508*508 = 258064
-```
-
----
-
-## 2.3 Gradient Magnitude
-
-Phase 1 uses the L1 approximation:
+Magnitude:
 
 ```text
 M = |Gx| + |Gy|
 ```
 
-Maximum:
-
-```text
-Mmax = 2040
-```
-
-Required magnitude width:
-
-```text
-12 bits unsigned
-```
-
----
-
-## 2.4 Threshold
-
-Default threshold:
+Threshold:
 
 ```text
 THRESHOLD = 100
-```
-
-Output:
-
-```text
 M >= THRESHOLD -> 255
 M <  THRESHOLD -> 0
 ```
 
----
-
-# 3. Phase 2 Architectural Principle
-
-Phase 2 separates:
-
-```text
-Control Plane
-and
-Data Plane
-```
-
-Control Plane:
-
-```text
-Arbiter
-    |
-    v
-FSM Controller
-```
-
-Data Plane:
-
-```text
-Input Buffer
-    |
-    v
-Verified DSP Datapath
-    |
-    v
-Output Buffer
-```
-
-Complete architecture:
-
-```text
-                    Host / Future AXI Wrapper
-                              |
-             +----------------+----------------+
-             |                                 |
-             | command / status                | pixel data
-             v                                 v
-      +----------------+                +---------------+
-      |    Arbiter     |                | Input Buffer  |
-      +----------------+                +---------------+
-             |                                 |
-             | accepted commands               |
-             v                                 v
-      +----------------+             +----------------------+
-      | FSM Controller |------------>| Verified DSP Datapath|
-      +----------------+             +----------------------+
-             |                                 |
-             |                                 v
-             |                         +---------------+
-             +------------------------>| Output Buffer |
-                                       +---------------+
-                                              |
-                                              v
-                                             Host
-```
-
----
-
-# 4. Arbiter Specification
-
-Module:
-
-```text
-image_dsp_arbiter.v
-```
-
-## 4.1 Role
-
-The Arbiter is the highest-level control coordinator.
-
-Its responsibilities are:
-
-```text
-- accept host commands
-- reject illegal commands
-- issue one-cycle command pulses
-- report accelerator status
-- control command ownership
-- provide future AXI-Lite control endpoint
-```
-
-The Arbiter must not implement:
-
-```text
-- pixel arithmetic
-- Median filtering
-- Sobel filtering
-- pipeline latency control
-- line buffering
-```
-
-Conceptually:
-
-```text
-Arbiter = command policy / ownership
-FSM     = time sequencing
-Datapath = image processing
-```
-
----
-
-## 4.2 Arbiter Interface
-
-```verilog
-module image_dsp_arbiter (
-    input  wire i_clk,
-    input  wire i_rst,
-
-    // Host-side commands
-    input  wire i_cmd_start,
-    input  wire i_cmd_clear_done,
-
-    // FSM status
-    input  wire i_fsm_busy,
-    input  wire i_fsm_done,
-    input  wire i_fsm_error,
-
-    // Command pulses to FSM
-    output reg  o_start_pulse,
-    output reg  o_clear_done_pulse,
-
-    // External status
-    output wire o_busy,
-    output wire o_done,
-    output wire o_error
-);
-```
-
----
-
-## 4.3 Arbiter Signal Meaning
-
-| Signal | Dir | Width | Meaning |
-|---|---|---:|---|
-| `i_clk` | in | 1 | accelerator clock |
-| `i_rst` | in | 1 | synchronous active-high reset |
-| `i_cmd_start` | in | 1 | host requests a new frame operation |
-| `i_cmd_clear_done` | in | 1 | host clears sticky DONE |
-| `i_fsm_busy` | in | 1 | FSM reports an active operation |
-| `i_fsm_done` | in | 1 | FSM reports frame completion |
-| `i_fsm_error` | in | 1 | FSM reports protocol/state error |
-| `o_start_pulse` | out | 1 | accepted one-cycle START pulse |
-| `o_clear_done_pulse` | out | 1 | accepted one-cycle DONE-clear pulse |
-| `o_busy` | out | 1 | accelerator BUSY status |
-| `o_done` | out | 1 | accelerator DONE status |
-| `o_error` | out | 1 | accelerator ERROR status |
-
----
-
-## 4.4 Arbiter Command Rules
-
-START is valid only when:
-
-```text
-BUSY = 0
-FSM = IDLE
-```
-
-Legal case:
-
-```text
-i_cmd_start = 1
-i_fsm_busy  = 0
-
-=> o_start_pulse = 1 for one cycle
-```
-
-Illegal case:
-
-```text
-i_cmd_start = 1
-i_fsm_busy  = 1
-```
-
-Required response:
-
-```text
-do not restart datapath
-set ERROR
-```
-
-`CLEAR_DONE` must not generate a new operation.
-
----
-
-# 5. FSM Controller Specification
-
-Module:
-
-```text
-image_dsp_fsm_ctrl.v
-```
-
-## 5.1 Required States
-
-```text
-ST_IDLE
-ST_LOAD
-ST_WORK
-ST_DRAIN
-ST_DONE
-ST_ERROR
-```
-
-Recommended encoding:
-
-```verilog
-localparam ST_IDLE  = 3'd0;
-localparam ST_LOAD  = 3'd1;
-localparam ST_WORK  = 3'd2;
-localparam ST_DRAIN = 3'd3;
-localparam ST_DONE  = 3'd4;
-localparam ST_ERROR = 3'd5;
-```
-
----
-
-## 5.2 State Flow
-
-```text
-                  START
-        +----------------------+
-        |                      v
-     +------+               +------+
-     | IDLE |-------------->| LOAD |
-     +------+               +------+
-                                |
-                                | input path ready
-                                v
-                            +------+
-                            | WORK |
-                            +------+
-                                |
-                                | last input accepted
-                                v
-                           +-------+
-                           | DRAIN |
-                           +-------+
-                                |
-                                | final output accepted
-                                v
-                            +------+
-                            | DONE |
-                            +------+
-                                |
-                                | CLEAR_DONE
-                                v
-                              IDLE
-```
-
-Any fatal protocol violation:
-
-```text
-any state -> ERROR
-```
-
----
-
-# 6. FSM State Meaning
-
-## `IDLE`
-
-```text
-BUSY = 0
-DONE = 0
-input disabled
-waiting for START
-```
-
-Transition:
-
-```text
-START -> LOAD
-```
-
----
-
-## `LOAD`
-
-Purpose:
-
-```text
-prepare input path / buffer
-clear frame counters
-prepare datapath for new frame
-```
-
-LOAD is intentionally separated from WORK so the accelerator has a clean setup phase.
-
-Transition:
-
-```text
-input path ready -> WORK
-```
-
----
-
-## `WORK`
-
-Purpose:
-
-```text
-accept input pixels
-feed verified Phase 1 datapath
-count accepted input pixels
-capture valid output pixels
-```
-
-Input transaction:
-
-```text
-input_fire = input_valid && input_ready
-```
-
-Output transaction:
-
-```text
-output_fire = output_valid && output_ready
-```
-
-Expected input count:
-
-```text
-N_INPUT = IMAGE_WIDTH * IMAGE_HEIGHT
-```
-
-When the last input pixel is accepted:
-
-```text
-WORK -> DRAIN
-```
-
----
-
-## `DRAIN`
-
-Purpose:
-
-```text
-stop accepting new frame data
-allow remaining pipeline results to propagate
-capture all remaining valid output results
-```
-
-Expected output count:
-
-```text
-N_OUTPUT = (IMAGE_WIDTH-4)*(IMAGE_HEIGHT-4)
-```
-
-When the last valid output result has been accepted:
-
-```text
-DRAIN -> DONE
-```
-
----
-
-## `DONE`
-
-Purpose:
-
-```text
-BUSY = 0
-DONE = 1
-```
-
-DONE must be sticky.
-
-It remains high until:
-
-```text
-CLEAR_DONE
-or
-reset
-```
-
----
-
-## `ERROR`
-
-Purpose:
-
-```text
-freeze accelerator control
-preserve error indication
-prevent silent corrupted processing
-```
-
-Recovery:
-
-```text
-reset
-```
-
-An explicit future error-clear command may be added later.
-
----
-
-# 7. FSM Interface
-
-```verilog
-module image_dsp_fsm_ctrl #(
-    parameter IMAGE_WIDTH  = 512,
-    parameter IMAGE_HEIGHT = 512
-)(
-    input  wire i_clk,
-    input  wire i_rst,
-
-    input  wire i_start_pulse,
-    input  wire i_clear_done_pulse,
-
-    input  wire i_input_ready,
-    input  wire i_input_fire,
-    input  wire i_output_fire,
-
-    input  wire i_input_overflow,
-    input  wire i_output_overflow,
-
-    output reg  o_accept_input,
-    output reg  o_enable_datapath,
-    output reg  o_accept_output,
-
-    output reg  o_busy,
-    output reg  o_done,
-    output reg  o_error
-);
-```
-
----
-
-## 7.1 FSM Signal Meaning
-
-| Signal | Dir | Width | Meaning |
-|---|---|---:|---|
-| `i_clk` | in | 1 | accelerator clock |
-| `i_rst` | in | 1 | synchronous reset |
-| `i_start_pulse` | in | 1 | accepted START from Arbiter |
-| `i_clear_done_pulse` | in | 1 | accepted DONE clear |
-| `i_input_ready` | in | 1 | input path is ready for frame processing |
-| `i_input_fire` | in | 1 | one input pixel successfully transferred |
-| `i_output_fire` | in | 1 | one output record successfully transferred |
-| `i_input_overflow` | in | 1 | input buffering failure |
-| `i_output_overflow` | in | 1 | output buffering failure |
-| `o_accept_input` | out | 1 | enables input acceptance |
-| `o_enable_datapath` | out | 1 | datapath operation is enabled |
-| `o_accept_output` | out | 1 | output path capture/read enabled |
-| `o_busy` | out | 1 | frame operation active |
-| `o_done` | out | 1 | sticky frame completion |
-| `o_error` | out | 1 | sticky fatal control/data error |
-
----
-
-# 8. Input Interface / Buffer Specification
-
-Module:
-
-```text
-image_dsp_input.v
-```
-
-Recommended implementation:
-
-```text
-small synchronous FIFO
-```
-
-The FIFO exists to decouple host timing from the verified streaming datapath.
-
-It is not a full-frame memory.
-
----
-
-## 8.1 Input Interface
-
-```verilog
-module image_dsp_input #(
-    parameter FIFO_DEPTH = 16
-)(
-    input  wire       i_clk,
-    input  wire       i_rst,
-
-    // Host side
-    input  wire       i_valid,
-    input  wire [7:0] i_pixel,
-    output wire       o_ready,
-
-    // Datapath side
-    output wire       o_valid,
-    output wire [7:0] o_pixel,
-    input  wire       i_ready,
-
-    // Status
-    output wire       o_empty,
-    output wire       o_full,
-    output wire       o_overflow
-);
-```
-
----
-
-## 8.2 Input Signal Meaning
-
-| Signal | Dir | Width | Meaning |
-|---|---|---:|---|
-| `i_clk` | in | 1 | clock |
-| `i_rst` | in | 1 | reset |
-| `i_valid` | in | 1 | host presents a valid input pixel |
-| `i_pixel` | in | 8 | grayscale input pixel |
-| `o_ready` | out | 1 | FIFO can accept another input pixel |
-| `o_valid` | out | 1 | FIFO has a pixel for the datapath |
-| `o_pixel` | out | 8 | next pixel in row-major order |
-| `i_ready` | in | 1 | downstream is allowed to consume pixel |
-| `o_empty` | out | 1 | FIFO contains no pixel |
-| `o_full` | out | 1 | FIFO has no free entry |
-| `o_overflow` | out | 1 | host attempted illegal write when full |
-
----
-
-## 8.3 Input Handshake
-
-Write:
-
-```text
-push = i_valid && o_ready
-```
-
-Read:
-
-```text
-pop = o_valid && i_ready
-```
-
-Required properties:
-
-```text
-- FIFO ordering preserved
-- no duplicated pixels
-- no lost pixels
-- no pointer update without push/pop
-```
-
----
-
-# 9. DSP Datapath Specification
-
-Module:
-
-```text
-image_dsp_datapath.v
-```
-
-This module wraps the verified Phase 1 core.
-
-It must not reimplement the Median/Sobel algorithm.
-
----
-
-## 9.1 Datapath Interface
-
-```verilog
-module image_dsp_datapath #(
-    parameter IMAGE_WIDTH  = 512,
-    parameter IMAGE_HEIGHT = 512,
-    parameter THRESHOLD    = 100,
-    parameter COORD_W      = 12
-)(
-    input  wire               i_clk,
-    input  wire               i_rst,
-
-    input  wire               i_valid,
-    input  wire [7:0]         i_pixel,
-
-    output wire               o_valid,
-    output wire [7:0]         o_pixel,
-    output wire [11:0]        o_mag,
-    output wire [COORD_W-1:0] o_x,
-    output wire [COORD_W-1:0] o_y
-);
-```
-
----
-
-## 9.2 Datapath Signal Meaning
-
-| Signal | Dir | Width | Meaning |
-|---|---|---:|---|
-| `i_clk` | in | 1 | DSP clock |
-| `i_rst` | in | 1 | DSP reset |
-| `i_valid` | in | 1 | input pixel valid |
-| `i_pixel` | in | 8 | grayscale input pixel |
-| `o_valid` | out | 1 | final DSP result valid |
-| `o_pixel` | out | 8 | thresholded result, 0 or 255 |
-| `o_mag` | out | 12 | `abs(Gx)+abs(Gy)` |
-| `o_x` | out | `COORD_W` | output x coordinate |
-| `o_y` | out | `COORD_W` | output y coordinate |
-
----
-
-## 9.3 Datapath Wrapper Rule
-
-Recommended implementation:
-
-```verilog
-image_dsp_top #(
-    .IMAGE_WIDTH  (IMAGE_WIDTH),
-    .IMAGE_HEIGHT (IMAGE_HEIGHT),
-    .THRESHOLD    (THRESHOLD),
-    .COORD_W      (COORD_W)
-) u_phase1_verified_core (
-    .i_clk   (i_clk),
-    .i_rst   (i_rst),
-    .i_valid (i_valid),
-    .i_pixel (i_pixel),
-
-    .o_valid (o_valid),
-    .o_pixel (o_pixel),
-    .o_x     (o_x),
-    .o_y     (o_y),
-    .o_mag   (o_mag)
-);
-```
-
-If the exact Phase 1 top-level port names differ, the wrapper may adapt the names only.
-
-The internal mathematical behavior must remain unchanged.
-
----
-
-# 10. Output Interface / Buffer Specification
-
-Module:
-
-```text
-image_dsp_output.v
-```
-
-Recommended implementation:
-
-```text
-small synchronous FIFO
-```
-
-One output FIFO entry is an atomic result record:
-
-```text
-{
-    pixel,
-    magnitude,
-    x,
-    y
-}
-```
-
----
-
-## 10.1 Output Interface
-
-```verilog
-module image_dsp_output #(
-    parameter FIFO_DEPTH = 16,
-    parameter COORD_W    = 12
-)(
-    input  wire               i_clk,
-    input  wire               i_rst,
-
-    // Datapath side
-    input  wire               i_valid,
-    input  wire [7:0]         i_pixel,
-    input  wire [11:0]        i_mag,
-    input  wire [COORD_W-1:0] i_x,
-    input  wire [COORD_W-1:0] i_y,
-    output wire               o_ready,
-
-    // Host side
-    output wire               o_valid,
-    output wire [7:0]         o_pixel,
-    output wire [11:0]        o_mag,
-    output wire [COORD_W-1:0] o_x,
-    output wire [COORD_W-1:0] o_y,
-    input  wire               i_ready,
-
-    // Status
-    output wire               o_empty,
-    output wire               o_full,
-    output wire               o_overflow
-);
-```
-
----
-
-## 10.2 Output Signal Meaning
-
-| Signal | Dir | Width | Meaning |
-|---|---|---:|---|
-| `i_clk` | in | 1 | clock |
-| `i_rst` | in | 1 | reset |
-| `i_valid` | in | 1 | datapath result is valid |
-| `i_pixel` | in | 8 | binary edge result |
-| `i_mag` | in | 12 | gradient magnitude |
-| `i_x` | in | `COORD_W` | result X coordinate |
-| `i_y` | in | `COORD_W` | result Y coordinate |
-| `o_ready` | out | 1 | output FIFO has free space |
-| `o_valid` | out | 1 | host-visible result exists |
-| `o_pixel` | out | 8 | output binary edge |
-| `o_mag` | out | 12 | corresponding magnitude |
-| `o_x` | out | `COORD_W` | corresponding X coordinate |
-| `o_y` | out | `COORD_W` | corresponding Y coordinate |
-| `i_ready` | in | 1 | host consumes current result |
-| `o_empty` | out | 1 | no result buffered |
-| `o_full` | out | 1 | no free output entry |
-| `o_overflow` | out | 1 | result arrived while buffer could not accept it |
-
----
-
-# 11. Accelerator Top-Level Specification
-
-Module:
-
-```text
-image_dsp_accel_top.v
-```
-
----
-
-## 11.1 Top-Level Interface
-
-```verilog
-module image_dsp_accel_top #(
-    parameter IMAGE_WIDTH    = 512,
-    parameter IMAGE_HEIGHT   = 512,
-    parameter THRESHOLD      = 100,
-    parameter COORD_W        = 12,
-    parameter IN_FIFO_DEPTH  = 16,
-    parameter OUT_FIFO_DEPTH = 16
-)(
-    input  wire               i_clk,
-    input  wire               i_rst,
-
-    // Control
-    input  wire               i_start,
-    input  wire               i_clear_done,
-
-    // Input stream
-    input  wire               i_in_valid,
-    input  wire [7:0]         i_in_pixel,
-    output wire               o_in_ready,
-
-    // Output stream
-    output wire               o_out_valid,
-    output wire [7:0]         o_out_pixel,
-    output wire [11:0]        o_out_mag,
-    output wire [COORD_W-1:0] o_out_x,
-    output wire [COORD_W-1:0] o_out_y,
-    input  wire               i_out_ready,
-
-    // Status
-    output wire               o_busy,
-    output wire               o_done,
-    output wire               o_error
-);
-```
-
----
-
-## 11.2 Top-Level Signal Meaning
-
-| Signal | Dir | Width | Meaning |
-|---|---|---:|---|
-| `i_clk` | in | 1 | accelerator clock |
-| `i_rst` | in | 1 | synchronous reset |
-| `i_start` | in | 1 | host requests one frame operation |
-| `i_clear_done` | in | 1 | host clears sticky DONE |
-| `i_in_valid` | in | 1 | host input pixel valid |
-| `i_in_pixel` | in | 8 | grayscale input pixel |
-| `o_in_ready` | out | 1 | accelerator can accept input |
-| `o_out_valid` | out | 1 | valid output record available |
-| `o_out_pixel` | out | 8 | output edge pixel |
-| `o_out_mag` | out | 12 | output gradient magnitude |
-| `o_out_x` | out | `COORD_W` | output X coordinate |
-| `o_out_y` | out | `COORD_W` | output Y coordinate |
-| `i_out_ready` | in | 1 | host is ready to consume result |
-| `o_busy` | out | 1 | frame operation active |
-| `o_done` | out | 1 | frame operation complete |
-| `o_error` | out | 1 | fatal command/dataflow error |
-
----
-
-# 12. Internal Signal Contract
-
-Recommended internal names:
-
-```text
-arb_start_pulse
-arb_clear_done_pulse
-
-fsm_accept_input
-fsm_enable_datapath
-fsm_accept_output
-
-in_valid
-in_pixel
-in_ready
-in_empty
-in_full
-in_overflow
-
-dp_valid
-dp_pixel
-dp_mag
-dp_x
-dp_y
-
-out_ready
-out_valid
-out_pixel
-out_mag
-out_x
-out_y
-out_empty
-out_full
-out_overflow
-
-input_fire
-output_fire
-```
-
-Definitions:
-
-```text
-input_fire  = in_valid  && datapath_input_accept
-output_fire = out_valid && i_out_ready
-```
-
-Counters must update only on completed transactions.
-
----
-
-# 13. Input and Output Count Rules
-
-Input frame size:
-
-```text
-INPUT_PIXELS = IMAGE_WIDTH * IMAGE_HEIGHT
-```
-
-Final valid output count:
-
-```text
-OUTPUT_PIXELS = (IMAGE_WIDTH-4)*(IMAGE_HEIGHT-4)
-```
-
-Examples:
-
-```text
-64x64:
-input  = 4096
-output = 3600
-
-512x512:
-input  = 262144
-output = 258064
-
-640x480:
-input  = 307200
-output = 302736
-```
-
-The FSM must never infer frame completion only from time or latency.
-
-Completion must be based on actual accepted transaction counts.
-
----
-
-# 14. Backpressure Constraint
-
-The verified Phase 1 core uses a valid-driven streaming architecture and does not currently expose a full ready/stall interface.
-
-Therefore Phase 2 must not silently stall internal datapath state after a pixel has been accepted into the core.
-
-Initial Phase 2 policy:
-
-```text
-- use input FIFO to absorb source gaps
-- use output FIFO to absorb short sink stalls
-- keep the verified datapath progressing normally
-- treat output FIFO overflow as ERROR
-```
-
-Do not drop a result silently.
-
-A future fully stallable datapath is allowed only as a separate revision and requires full Python-vs-RTL regression.
-
----
-
-# 15. Error Conditions
-
-At minimum, Phase 2 shall detect:
-
-```text
-1. START while BUSY
-2. accepted input count > IMAGE_WIDTH*IMAGE_HEIGHT
-3. accepted output count > (IMAGE_WIDTH-4)*(IMAGE_HEIGHT-4)
-4. input FIFO overflow
-5. output FIFO overflow
-6. unexpected result after frame completion
-7. DONE reached with incorrect frame counts
-```
-
-Required behavior:
-
-```text
-o_error = 1
-FSM -> ST_ERROR
-```
-
-No silent recovery.
-
----
-
-# 16. Reset Behavior
-
-On `i_rst = 1`:
-
-```text
-FSM            -> IDLE
-BUSY           -> 0
-DONE           -> 0
-ERROR          -> 0
-input_count    -> 0
-output_count   -> 0
-input FIFO     -> empty
-output FIFO    -> empty
-```
-
-The Phase 1 datapath must also receive reset.
-
----
-
-# 17. Phase 2 Timing / Synthesis Rules
-
-All Phase 2 modules shall be synchronous to:
-
-```text
-i_clk
-```
-
-No generated internal clock is permitted.
-
-Use:
-
-```text
-clock enable
-valid
-ready
-state
-```
-
-instead of gated clocks.
-
-The following must remain synthesizable:
-
-```text
-Arbiter
-FSM
-FIFO control
-datapath wrapper
-status logic
-frame counters
-```
-
-Simulation-only constructs such as:
-
-```text
-$fopen
-$fdisplay
-$readmemh for runtime hardware behavior
-```
-
-must remain in the testbench only.
-
-`$readmemh` may still be used in simulation memories for verification.
-
----
-
-# 18. Phase 2 Verification Plan
-
-## 18.1 Arbiter Testbench
-
-Verify:
-
-```text
-START in IDLE -> accepted
-START while BUSY -> ERROR
-CLEAR_DONE -> clears DONE
-reset -> clean state
-```
-
----
-
-## 18.2 FSM Testbench
-
-Verify:
-
-```text
-IDLE
--> LOAD
--> WORK
--> DRAIN
--> DONE
--> IDLE
-```
-
-Also verify:
-
-```text
-overflow -> ERROR
-illegal count -> ERROR
-```
-
----
-
-## 18.3 Input Buffer Testbench
-
-Verify:
-
-```text
-FIFO push
-FIFO pop
-empty
-full
-ordering
-no loss
-no duplication
-overflow
-```
-
----
-
-## 18.4 Output Buffer Testbench
-
-Verify:
-
-```text
-pixel/mag/x/y stay aligned
-FIFO push/pop
-backpressure
-ordering
-overflow
-```
-
----
-
-## 18.5 Datapath Regression
-
-The Phase 2 datapath wrapper must still pass the existing Phase 1 test.
-
-Required:
+Any wrapper/refactor SHALL preserve:
 
 ```text
 Python == RTL
@@ -1256,155 +123,1112 @@ mismatch = 0
 
 ---
 
-## 18.6 Full Accelerator Test
+# 4. Clock and Reset
 
-Sequence:
+All custom Phase 2 RTL SHALL use one clock:
 
-```text
-1. reset
-2. assert START
-3. stream IMAGE_WIDTH*IMAGE_HEIGHT input pixels
-4. allow datapath to process
-5. capture all valid outputs
-6. wait for DONE
-7. compare against Python golden result
+```verilog
+i_clk
 ```
 
-Required:
+Reset:
+
+```verilog
+i_rst
+```
+
+Rules:
 
 ```text
-input_count  = W*H
-output_count = (W-4)*(H-4)
-mismatch     = 0
-ERROR        = 0
+i_rst is active-high.
+All custom control state is synchronous to i_clk.
+No gated clock is allowed.
+No generated internal clock is allowed.
+```
+
+The Vivado-generated AXI wrapper MAY use the Vivado naming style internally, but the custom core boundary SHALL normalize clock/reset to `i_clk` and `i_rst`.
+
+---
+
+# 5. AXI Wrapper / Core Boundary
+
+The raw AXI channels SHALL terminate inside `dsp_image_axi_wrapper`.
+
+`dsp_image_top` SHALL NOT depend directly on:
+
+```text
+AWVALID
+AWREADY
+WVALID
+WREADY
+BVALID
+BREADY
+ARVALID
+ARREADY
+RVALID
+RREADY
+```
+
+The wrapper SHALL translate AXI operations into the following internal request/response interface.
+
+## 5.1 `dsp_image_top` external interface
+
+```verilog
+module dsp_image_top #(
+    parameter IMAGE_WIDTH  = 64,
+    parameter IMAGE_HEIGHT = 64,
+    parameter MEM_ADDR_W   = 12
+)(
+    input  wire        i_clk,
+    input  wire        i_rst,
+
+    // Write request
+    input  wire        i_bus_wr_req,
+    input  wire [31:0] i_bus_wr_addr,
+    input  wire [31:0] i_bus_wr_data,
+    input  wire [3:0]  i_bus_wr_strb,
+    output wire        o_bus_wr_ack,
+    output wire        o_bus_wr_err,
+
+    // Read request
+    input  wire        i_bus_rd_req,
+    input  wire [31:0] i_bus_rd_addr,
+    output wire        o_bus_rd_ack,
+    output wire [31:0] o_bus_rd_data,
+    output wire        o_bus_rd_err,
+
+    // Optional interrupt/status outputs
+    output wire        o_irq_done,
+    output wire        o_irq_error
+);
+```
+
+`MEM_ADDR_W` SHALL satisfy:
+
+```text
+2^MEM_ADDR_W >= max(N_INPUT, N_OUTPUT)
+```
+
+where:
+
+```text
+N_INPUT  = IMAGE_WIDTH * IMAGE_HEIGHT
+N_OUTPUT = (IMAGE_WIDTH-4) * (IMAGE_HEIGHT-4)
 ```
 
 ---
 
-# 19. Phase 2 Definition of Done
+# 6. Internal Bus Transaction Contract
 
-## RTL
+A request remains active until acknowledged by `dsp_image_top`.
 
-- [ ] `image_dsp_accel_top.v`
-- [ ] `image_dsp_arbiter.v`
-- [ ] `image_dsp_fsm_ctrl.v`
-- [ ] `image_dsp_input.v`
-- [ ] `image_dsp_datapath.v`
-- [ ] `image_dsp_output.v`
+Write completion:
 
-## Control
+```text
+write_fire = i_bus_wr_req && o_bus_wr_ack
+```
 
-- [ ] START accepted only when idle
-- [ ] BUSY correct
-- [ ] DONE sticky
-- [ ] CLEAR_DONE correct
-- [ ] ERROR sticky
-- [ ] illegal START detected
+Read completion:
 
-## Data
+```text
+read_fire = i_bus_rd_req && o_bus_rd_ack
+```
 
-- [ ] correct row-major input order
-- [ ] correct output order
-- [ ] no lost input pixel
-- [ ] no duplicated input pixel
-- [ ] no lost output record
-- [ ] no duplicated output record
-- [ ] pixel/magnitude/coordinate alignment preserved
+Rules:
 
-## Verification
+- The wrapper SHALL hold request address/data stable until ACK.
+- `o_bus_*_ack` SHALL pulse only when the operation has completed.
+- `o_bus_*_err` SHALL be valid together with the corresponding ACK.
+- Register access MAY complete faster than BRAM-backed access.
+- Output Memory read latency SHALL be hidden behind the request/ACK contract.
+- The AXI wrapper SHALL not assume combinational memory read data.
 
-- [ ] Phase 1 regression still PASS
-- [ ] Arbiter TB PASS
-- [ ] FSM TB PASS
-- [ ] Input Buffer TB PASS
-- [ ] Output Buffer TB PASS
-- [ ] Full accelerator TB PASS
-- [ ] Python == Phase 2 RTL
-- [ ] mismatch = 0
-
-## Synthesis
-
-- [ ] Verilog-2001 only
-- [ ] no inferred gated clock
-- [ ] no latch
-- [ ] synthesis PASS
-- [ ] implementation PASS
-- [ ] timing constraint defined
-- [ ] LUT / FF / BRAM / DSP reported
-- [ ] Fmax reported
+This rule is required because BRAM read paths are synchronous.
 
 ---
 
-# 20. Phase 3 Preview — AXI Integration
+# 7. Baseline AXI Data Mapping
 
-Phase 2 intentionally defines a bus-independent accelerator.
-
-Phase 3 shall wrap it with:
+Phase 2 baseline uses a simple, verification-friendly format:
 
 ```text
-AXI-Lite
-for:
-    START
-    CLEAR_DONE
-    STATUS
-    configuration
-
-AXI4-Stream / DMA
-for:
-    input image stream
-    output image stream
+one 8-bit pixel per 32-bit AXI word
 ```
 
-Future architecture:
+For an input pixel write:
 
 ```text
-                         ARM PS
-                            |
-            +---------------+---------------+
-            |                               |
-         AXI-Lite                        AXI DMA
-            |                               |
-            v                               v
-      +-------------+                AXI4-Stream
-      | AXI Control |                     |
-      +-------------+                     |
-            |                              |
-            +---------------+--------------+
-                            |
-                            v
-                +-----------------------+
-                | Phase 2 Accelerator   |
-                |                       |
-                | Arbiter               |
-                | FSM                   |
-                | Input Buffer          |
-                | Verified Datapath     |
-                | Output Buffer         |
-                +-----------------------+
+pixel = i_bus_wr_data[7:0]
+i_bus_wr_strb MUST equal 4'b0001
 ```
 
-AXI protocol logic must remain outside the verified DSP datapath.
+For an output pixel read:
+
+```text
+o_bus_rd_data[7:0]   = pixel
+o_bus_rd_data[31:8]  = 0
+```
+
+Pixel `k` is addressed using a 4-byte stride:
+
+```text
+pixel_address = REGION_BASE + (k << 2)
+```
+
+A future packed-four-pixels-per-word optimization MAY be added, but it is not part of the Phase 2 baseline and SHALL require a specification revision.
 
 ---
 
-# 21. Final Phase 2 Engineering Rule
+# 8. Logical Address Map
 
-The Phase 2 architecture must follow this ownership model:
+The following are offsets inside the IP address space.
 
 ```text
+0x0000_0000 : CTRL
+0x0000_0004 : STATUS
+0x0000_0008 : INFO_WIDTH      (read-only)
+0x0000_000C : INFO_HEIGHT     (read-only)
+0x0000_0010 : INFO_THRESHOLD  (read-only)
+
+0x0010_0000 : INPUT_BASE
+0x0110_0000 : OUTPUT_BASE
+```
+
+Input pixel `k`:
+
+```text
+INPUT_BASE + 4*k
+```
+
+Output valid-region pixel `k`:
+
+```text
+OUTPUT_BASE + 4*k
+```
+
+Output Memory stores only final valid-region pixels densely in raster order.
+
+For output index `k`:
+
+```text
+x = 2 + (k % (IMAGE_WIDTH-4))
+y = 2 + (k / (IMAGE_WIDTH-4))
+```
+
+This avoids undefined/stale border memory.
+
+---
+
+# 9. CTRL Register
+
+`CTRL` is command-based, not a persistent mode register.
+
+```text
+bit 0 = LOAD
+bit 1 = START
+bit 2 = STOP
+```
+
+Rules:
+
+- A command is generated only on an acknowledged CTRL write.
+- Exactly one of bits `[2:0]` SHALL be set per command write.
+- Multiple command bits set simultaneously SHALL return bus error and assert access error.
+- `CTRL` reads MAY return zero.
+
+Legal state:
+
+```text
+LOAD  only in IDLE
+START only in LOAD
+STOP  only in READ
+```
+
+---
+
+# 10. STATUS Register
+
+Recommended mapping:
+
+```text
+bit 0 = IDLE
+bit 1 = LOAD
+bit 2 = EXEC
+bit 3 = READ
+bit 4 = BUSY
+bit 5 = DONE
+bit 6 = ERROR
+bits 31:7 = 0
+```
+
+Definitions:
+
+```text
+BUSY = state is LOAD or EXEC or READ
+DONE = state is READ
+ERROR = state is ERROR
+```
+
+STATUS reads SHALL be legal in every state.
+
+---
+
+# 11. Core Control Hierarchy
+
+The control hierarchy SHALL be interpreted exactly as follows.
+
+```text
+FSM
+    = defines WHEN an operation/access is legal
+
 Arbiter
-    = command authority
-
-FSM Controller
-    = execution sequencing authority
-
-Input / Output
-    = data transport and buffering
+    = decodes host requests and ENFORCES the FSM permissions
 
 Datapath
-    = verified image-processing computation
+    = performs internal memory access during EXEC
+
+Memory
+    = passive storage; it does not make policy decisions
 ```
 
-The Phase 1 DSP core is the algorithmic reference.
+This ownership rule is normative.
 
-> Phase 2 must integrate the verified core without changing its mathematical behavior.
+---
+
+# 12. `dsp_image_fsm_ctrl`
+
+## 12.1 Interface
+
+```verilog
+module dsp_image_fsm_ctrl (
+    input  wire       i_clk,
+    input  wire       i_rst,
+
+    // Commands from Arbiter
+    input  wire       i_load_cmd,
+    input  wire       i_start_cmd,
+    input  wire       i_stop_cmd,
+    input  wire       i_access_error,
+
+    // Datapath feedback
+    input  wire       i_datapath_done,
+    input  wire       i_datapath_error,
+
+    // State / permission outputs
+    output reg  [2:0] o_state,
+    output wire       o_allow_input_write,
+    output wire       o_allow_output_read,
+
+    // Datapath control
+    output reg        o_datapath_start,
+
+    // Status
+    output wire       o_busy,
+    output wire       o_done,
+    output wire       o_error
+);
+```
+
+## 12.2 States
+
+```verilog
+ST_IDLE  = 3'd0;
+ST_LOAD  = 3'd1;
+ST_EXEC  = 3'd2;
+ST_READ  = 3'd3;
+ST_ERROR = 3'd4;
+```
+
+## 12.3 State transitions
+
+```text
+IDLE --LOAD--> LOAD
+LOAD --START--> EXEC
+EXEC --datapath_done--> READ
+READ --STOP--> IDLE
+
+Any state --access_error/datapath_error--> ERROR
+ERROR --reset--> IDLE
+```
+
+## 12.4 Permission outputs
+
+```text
+o_allow_input_write = 1 only in LOAD
+o_allow_output_read = 1 only in READ
+```
+
+## 12.5 Datapath start
+
+`o_datapath_start` SHALL be a one-cycle pulse on the accepted transition:
+
+```text
+LOAD -> EXEC
+```
+
+The datapath SHALL then run autonomously until `i_datapath_done`.
+
+---
+
+# 13. `dsp_image_arbiter`
+
+## 13.1 Responsibility
+
+The Arbiter SHALL:
+
+```text
+- decode CTRL/STATUS/INFO/Input/Output addresses
+- generate LOAD/START/STOP commands
+- gate host Input Memory writes using FSM permission
+- gate host Output Memory reads using FSM permission
+- route register/status read data
+- route Output Memory read data
+- report illegal host transactions
+- generate bus ACK/ERR responses
+```
+
+The Arbiter SHALL NOT:
+
+```text
+- sequence Median/Sobel cycles
+- generate datapath pixel addresses during EXEC
+- write Output Memory during EXEC
+- read Input Memory during EXEC
+```
+
+Those EXEC-side operations belong to the Datapath.
+
+## 13.2 Interface
+
+```verilog
+module dsp_image_arbiter #(
+    parameter MEM_ADDR_W = 12
+)(
+    input  wire                    i_clk,
+    input  wire                    i_rst,
+
+    // Internal bus from AXI wrapper
+    input  wire                    i_bus_wr_req,
+    input  wire [31:0]             i_bus_wr_addr,
+    input  wire [31:0]             i_bus_wr_data,
+    input  wire [3:0]              i_bus_wr_strb,
+    output reg                     o_bus_wr_ack,
+    output reg                     o_bus_wr_err,
+
+    input  wire                    i_bus_rd_req,
+    input  wire [31:0]             i_bus_rd_addr,
+    output reg                     o_bus_rd_ack,
+    output reg  [31:0]             o_bus_rd_data,
+    output reg                     o_bus_rd_err,
+
+    // FSM state/permissions/status
+    input  wire [2:0]              i_fsm_state,
+    input  wire                    i_allow_input_write,
+    input  wire                    i_allow_output_read,
+    input  wire                    i_fsm_busy,
+    input  wire                    i_fsm_done,
+    input  wire                    i_fsm_error,
+
+    // Commands / access error to FSM
+    output reg                     o_load_cmd,
+    output reg                     o_start_cmd,
+    output reg                     o_stop_cmd,
+    output reg                     o_access_error,
+
+    // Host-side Input Memory write port
+    output reg                     o_in_host_we,
+    output reg  [MEM_ADDR_W-1:0]   o_in_host_waddr,
+    output reg  [7:0]              o_in_host_wdata,
+
+    // Host-side Output Memory read port
+    output reg                     o_out_host_re,
+    output reg  [MEM_ADDR_W-1:0]   o_out_host_raddr,
+    input  wire [7:0]              i_out_host_rdata,
+    input  wire                    i_out_host_rvalid
+);
+```
+
+---
+
+# 14. Arbiter Access Policy
+
+## 14.1 Always legal
+
+```text
+STATUS read
+INFO_WIDTH read
+INFO_HEIGHT read
+INFO_THRESHOLD read
+```
+
+## 14.2 IDLE
+
+Legal:
+
+```text
+CTRL.LOAD
+```
+
+Illegal:
+
+```text
+Input Memory write
+Output Memory read
+CTRL.START
+CTRL.STOP
+```
+
+## 14.3 LOAD
+
+Legal:
+
+```text
+Input Memory write
+CTRL.START
+STATUS/INFO read
+```
+
+Illegal:
+
+```text
+Output Memory read
+CTRL.LOAD
+CTRL.STOP
+```
+
+## 14.4 EXEC
+
+Legal:
+
+```text
+STATUS/INFO read
+```
+
+Illegal host data access:
+
+```text
+Input Memory write
+Output Memory read
+LOAD/START/STOP
+```
+
+## 14.5 READ
+
+Legal:
+
+```text
+Output Memory read
+CTRL.STOP
+STATUS/INFO read
+```
+
+Illegal:
+
+```text
+Input Memory write
+CTRL.LOAD
+CTRL.START
+```
+
+An illegal transaction SHALL:
+
+```text
+ACK the request
+assert corresponding bus ERR
+pulse o_access_error
+```
+
+and the FSM SHALL enter `ST_ERROR`.
+
+---
+
+# 15. Input Memory
+
+Module:
+
+```text
+dsp_image_input_memory.v
+```
+
+The memory SHALL expose two logical ports:
+
+```text
+Port A: host write port from Arbiter
+Port B: datapath read port
+```
+
+## 15.1 Interface
+
+```verilog
+module dsp_image_input_memory #(
+    parameter MEM_ADDR_W = 12
+)(
+    input  wire                    i_clk,
+
+    // Host write port
+    input  wire                    i_host_we,
+    input  wire [MEM_ADDR_W-1:0]   i_host_waddr,
+    input  wire [7:0]              i_host_wdata,
+
+    // Datapath read port
+    input  wire                    i_dp_re,
+    input  wire [MEM_ADDR_W-1:0]   i_dp_raddr,
+    output reg  [7:0]              o_dp_rdata,
+    output reg                     o_dp_rvalid
+);
+```
+
+## 15.2 Ownership
+
+```text
+LOAD:
+Arbiter/host may write Port A.
+Datapath read MUST be inactive.
+
+EXEC:
+Host writes MUST be blocked by Arbiter.
+Datapath may read Port B.
+
+IDLE/READ/ERROR:
+No Input Memory transaction is required.
+```
+
+BRAM-style datapath read is synchronous:
+
+```text
+i_dp_re at cycle N
+-> o_dp_rvalid/o_dp_rdata at cycle N+1
+```
+
+---
+
+# 16. Datapath Wrapper
+
+Module:
+
+```text
+dsp_image_datapath.v
+```
+
+## 16.1 Responsibility
+
+The Datapath SHALL:
+
+```text
+1. accept one-cycle i_start
+2. reset internal frame counters for the new execution
+3. request Input Memory pixels in row-major order
+4. account for Input Memory read latency
+5. feed Phase 1 i_valid/i_pixel
+6. capture Phase 1 o_valid/o_pixel/o_x/o_y
+7. write only final valid-region pixels to Output Memory
+8. maintain input/output counts
+9. assert o_done after the final output write
+```
+
+## 16.2 Interface
+
+```verilog
+module dsp_image_datapath #(
+    parameter IMAGE_WIDTH  = 64,
+    parameter IMAGE_HEIGHT = 64,
+    parameter MEM_ADDR_W   = 12
+)(
+    input  wire                    i_clk,
+    input  wire                    i_rst,
+    input  wire                    i_start,
+
+    // Input Memory read
+    output reg                     o_in_re,
+    output reg  [MEM_ADDR_W-1:0]   o_in_raddr,
+    input  wire [7:0]              i_in_rdata,
+    input  wire                    i_in_rvalid,
+
+    // Output Memory write
+    output reg                     o_out_we,
+    output reg  [MEM_ADDR_W-1:0]   o_out_waddr,
+    output reg  [7:0]              o_out_wdata,
+
+    // Status
+    output reg                     o_busy,
+    output reg                     o_done,
+    output reg                     o_error
+);
+```
+
+## 16.3 Input count
+
+```text
+N_INPUT = IMAGE_WIDTH * IMAGE_HEIGHT
+```
+
+Input count SHALL advance when a memory-read response is actually fed into Phase 1:
+
+```text
+phase1_input_fire = i_in_rvalid
+```
+
+## 16.4 Output count
+
+```text
+N_OUTPUT = (IMAGE_WIDTH-4)*(IMAGE_HEIGHT-4)
+```
+
+Output count SHALL advance only when Phase 1 final `o_valid` causes an Output Memory write.
+
+## 16.5 Output addressing
+
+Output Memory stores valid results densely:
+
+```text
+o_out_waddr = output_count
+```
+
+This is independent of full-frame `x/y`.
+
+The full-frame coordinate corresponding to output index `k` is:
+
+```text
+x = 2 + (k % (IMAGE_WIDTH-4))
+y = 2 + (k / (IMAGE_WIDTH-4))
+```
+
+## 16.6 Completion
+
+`o_done` SHALL pulse/assert only after the final valid result has been written:
+
+```text
+output_count == N_OUTPUT
+```
+
+The last input request by itself SHALL NOT imply completion.
+
+---
+
+# 17. Output Memory
+
+Module:
+
+```text
+dsp_image_output_memory.v
+```
+
+The memory SHALL expose two logical ports:
+
+```text
+Port A: datapath write port
+Port B: host read port through Arbiter
+```
+
+## 17.1 Interface
+
+```verilog
+module dsp_image_output_memory #(
+    parameter MEM_ADDR_W = 12
+)(
+    input  wire                    i_clk,
+
+    // Datapath write port
+    input  wire                    i_dp_we,
+    input  wire [MEM_ADDR_W-1:0]   i_dp_waddr,
+    input  wire [7:0]              i_dp_wdata,
+
+    // Host read port
+    input  wire                    i_host_re,
+    input  wire [MEM_ADDR_W-1:0]   i_host_raddr,
+    output reg  [7:0]              o_host_rdata,
+    output reg                     o_host_rvalid
+);
+```
+
+## 17.2 Ownership
+
+```text
+EXEC:
+Datapath may write Port A.
+Host reads MUST be blocked by Arbiter.
+
+READ:
+Datapath write MUST be inactive.
+Arbiter/host may read Port B.
+
+IDLE/LOAD/ERROR:
+No Output Memory transaction is required.
+```
+
+Host read is synchronous:
+
+```text
+i_host_re at cycle N
+-> o_host_rvalid/o_host_rdata at cycle N+1
+```
+
+The Arbiter SHALL wait for `o_host_rvalid` before acknowledging the bus read.
+
+---
+
+# 18. Exact Memory Control Relationships
+
+This section is normative and removes ambiguity.
+
+## 18.1 Input Memory
+
+```text
+AXI Wrapper
+    |
+    v
+Arbiter
+    |
+    | o_in_host_we
+    | o_in_host_waddr
+    | o_in_host_wdata
+    v
+Input Memory
+    ^
+    |
+    | o_in_re / o_in_raddr
+    | i_in_rdata / i_in_rvalid
+    |
+Datapath
+```
+
+FSM relationship:
+
+```text
+FSM o_allow_input_write
+    -> Arbiter
+    -> gates host write permission
+```
+
+The FSM does not carry pixel data.
+
+## 18.2 Output Memory
+
+```text
+Datapath
+    |
+    | o_out_we
+    | o_out_waddr
+    | o_out_wdata
+    v
+Output Memory
+    |
+    | o_host_rdata
+    | o_host_rvalid
+    v
+Arbiter
+    |
+    v
+AXI Wrapper
+```
+
+FSM relationship:
+
+```text
+FSM o_allow_output_read
+    -> Arbiter
+    -> gates host read permission
+```
+
+The Arbiter does not generate EXEC-side output writes.
+
+---
+
+# 19. `dsp_image_top` Internal Connections
+
+The top module SHALL connect signals exactly by role:
+
+```text
+Arbiter -> FSM:
+load_cmd
+start_cmd
+stop_cmd
+access_error
+
+FSM -> Arbiter:
+state
+allow_input_write
+allow_output_read
+busy
+done
+error
+
+FSM -> Datapath:
+datapath_start
+
+Datapath -> FSM:
+datapath_done
+datapath_error
+
+Arbiter -> Input Memory:
+host_we
+host_waddr
+host_wdata
+
+Datapath -> Input Memory:
+dp_re
+dp_raddr
+
+Input Memory -> Datapath:
+dp_rdata
+dp_rvalid
+
+Datapath -> Output Memory:
+dp_we
+dp_waddr
+dp_wdata
+
+Arbiter -> Output Memory:
+host_re
+host_raddr
+
+Output Memory -> Arbiter:
+host_rdata
+host_rvalid
+```
+
+No other block SHALL bypass the ownership rules above.
+
+---
+
+# 20. Reset Behavior
+
+On `i_rst`:
+
+```text
+FSM -> IDLE
+all command pulses -> 0
+access error -> 0
+datapath busy/done/error -> 0
+datapath counters -> 0
+pending bus transaction state -> idle
+```
+
+Memory contents do not need to be cleared because:
+
+```text
+Input Memory is fully rewritten before START.
+Output Memory exposes only entries written during the current EXEC.
+```
+
+Software SHALL read exactly `N_OUTPUT` valid results after successful completion.
+
+---
+
+# 21. Resource Constraint
+
+The architecture uses internal BRAM-backed frame buffers.
+
+A 512x512 8-bit input frame requires:
+
+```text
+262144 bytes
+```
+
+A dense 508x508 8-bit output requires:
+
+```text
+258064 bytes
+```
+
+Therefore a dual-buffer full 512x512 implementation SHALL NOT be assumed to fit on every target.
+
+Requirements:
+
+- `IMAGE_WIDTH`, `IMAGE_HEIGHT`, and memory depths SHALL be parameterized.
+- The chosen hardware frame size SHALL fit the actual BRAM budget.
+- EBAZ4205 hardware bring-up MAY use a smaller resolution.
+- If full 512x512 on a small device becomes mandatory, the architecture SHALL be revised to use external memory, tiling, memory reuse, or a streaming scheme.
+
+This resource rule does not change the Phase 1 512x512 algorithmic reference.
+
+---
+
+# 22. Verification Plan
+
+Verification order SHALL be:
+
+```text
+1. Input Memory TB
+2. Output Memory TB
+3. Datapath Wrapper TB
+4. FSM TB
+5. Arbiter TB
+6. dsp_image_top TB without AXI
+7. AXI wrapper TB
+8. synthesis
+9. implementation
+10. ARM software test
+```
+
+## 22.1 Memory TB
+
+Verify:
+
+```text
+synchronous read latency
+address ordering
+write/read correctness
+rvalid behavior
+```
+
+## 22.2 Datapath Wrapper TB
+
+Verify:
+
+```text
+Input Memory -> Phase 1 stream
+row-major ordering
+exact input count
+exact output count
+dense output addressing
+datapath_done timing
+Python == output
+```
+
+## 22.3 FSM TB
+
+Verify every legal transition and every illegal-command path.
+
+## 22.4 Arbiter TB
+
+Verify:
+
+```text
+address decode
+CTRL command legality
+STATUS reads in every state
+Input writes only in LOAD
+Output reads only in READ
+bus ACK/ERR timing
+Output Memory read wait for rvalid
+```
+
+## 22.5 `dsp_image_top` TB
+
+Required sequence:
+
+```text
+reset
+LOAD
+write N_INPUT pixels
+START
+wait until READ/DONE
+read N_OUTPUT pixels
+STOP
+compare with Python
+```
+
+Pass:
+
+```text
+mismatch = 0
+ERROR = 0
+```
+
+## 22.6 AXI Wrapper TB
+
+Verify the Vivado AXI wrapper correctly translates AXI transactions into the internal request/ACK interface.
+
+---
+
+# 23. Synthesis / Implementation Rules
+
+Custom RTL SHALL remain:
+
+```text
+Verilog-2001
+synthesizable
+single-clock
+```
+
+Custom synthesizable RTL SHALL NOT use:
+
+```text
+$fopen
+$fdisplay
+testbench-only delays
+gated clocks
+generated clocks
+SystemVerilog-only constructs
+```
+
+Required reports:
+
+```text
+synthesis PASS
+implementation PASS
+LUT
+FF
+BRAM
+DSP
+timing
+Fmax
+```
+
+---
+
+# 24. Definition of Done
+
+## Core RTL
+
+- [ ] `dsp_image_input_memory.v`
+- [ ] `dsp_image_output_memory.v`
+- [ ] `dsp_image_datapath.v`
+- [ ] `dsp_image_fsm_ctrl.v`
+- [ ] `dsp_image_arbiter.v`
+- [ ] `dsp_image_top.v`
+
+## Core Verification
+
+- [ ] memory TBs PASS
+- [ ] datapath wrapper TB PASS
+- [ ] FSM TB PASS
+- [ ] Arbiter TB PASS
+- [ ] `dsp_image_top` TB PASS
+- [ ] Python == `dsp_image_top`
+- [ ] mismatch = 0
+
+## AXI
+
+- [ ] Vivado AXI4-Lite wrapper generated
+- [ ] request/ACK bridge implemented
+- [ ] AXI write path PASS
+- [ ] AXI read path PASS
+- [ ] CTRL/STATUS PASS
+- [ ] Input/Output region access PASS
+
+## FPGA
+
+- [ ] synthesis PASS
+- [ ] implementation PASS
+- [ ] timing PASS
+- [ ] utilization reported
+- [ ] ARM can LOAD input
+- [ ] ARM can START processing
+- [ ] ARM can poll STATUS
+- [ ] ARM can READ output
+- [ ] ARM can STOP/return core to IDLE
+
+---
+
+# 25. Final Engineering Rule
+
+```text
+AXI wrapper
+    = protocol boundary
+
+FSM
+    = legal-time / state authority
+
+Arbiter
+    = host transaction decode, routing, and enforcement
+
+Datapath
+    = EXEC-side memory user and image computation
+
+Memories
+    = passive storage
+```
+
+> Verify `dsp_image_top` without AXI first. Only after the core is correct shall it be wrapped by the Vivado-generated AXI4-Lite interface.
