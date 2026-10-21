@@ -2,14 +2,14 @@
 
 [![RTL](https://img.shields.io/badge/RTL-Verilog--2001-blue)](https://en.wikipedia.org/wiki/Verilog)
 [![Phase 1](https://img.shields.io/badge/Phase%201-PASS-brightgreen)](#current-status)
-[![Phase 2](https://img.shields.io/badge/Phase%202-Accelerator%20Architecture-orange)](#phase-2--structured-accelerator)
+[![Phase 2](https://img.shields.io/badge/Phase%202-AXI%20Accelerator-orange)](#phase-2--axi-memory-mapped-accelerator)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](#license)
 
-A classical integer-only image-processing project for **salt-and-pepper noise removal and Sobel edge detection**, implemented as a software reference model and synthesizable FPGA RTL.
+A classical integer-only image DSP project for **salt-and-pepper noise removal and Sobel edge detection**, implemented with a Python golden model, CPU C code, and synthesizable Verilog-2001 RTL.
 
-The project targets:
+Target platforms:
 
-- **Orange Pi Zero 3W** — CPU baseline and web demonstration
+- **Orange Pi Zero 3W** — CPU baseline and web demo
 - **EBAZ4205 / Zynq-7010** — ARM PS + FPGA PL
 - **AMD Kria KR260** — ARM PS + FPGA PL
 
@@ -33,34 +33,29 @@ PASS
 ## DSP Pipeline
 
 ```text
-Original RGB Image
-        |
-        v
-    Grayscale
-        |
-        v
+RGB Image
+   |
+   v
+Grayscale
+   |
+   v
 Salt & Pepper Noise
-        |
-        v
-   Median 3x3
-        |
-        v
-    Sobel 3x3
-      |     |
-      v     v
-     Gx     Gy
-       \   /
-         v
-    |Gx| + |Gy|
-         |
-         v
-    Threshold
-         |
-         v
- Binary Edge Image
+   |
+   v
+Median 3x3
+   |
+   v
+Sobel 3x3
+   |
+   v
+|Gx| + |Gy|
+   |
+   v
+Threshold
+   |
+   v
+Binary Edge Image
 ```
-
-The RTL uses integer arithmetic only.
 
 ---
 
@@ -70,7 +65,7 @@ The RTL uses integer arithmetic only.
 
 **Status: COMPLETE**
 
-The standalone RTL pipeline has been implemented and verified against the Python golden model.
+Confirmed baseline:
 
 ```text
 W=512 H=512
@@ -80,14 +75,7 @@ errors=0
 PASS
 ```
 
-Verified result:
-
-```text
-Python == RTL
-mismatch = 0
-```
-
-Phase 1 datapath:
+The verified Phase 1 datapath is frozen as the compute reference:
 
 ```text
 image_dsp_top
@@ -102,77 +90,85 @@ image_dsp_top
 └── threshold
 ```
 
-The Phase 1 core is now treated as a **frozen verified compute block**.
+Phase 2 may wrap this core but must not silently change its algorithm, coordinate convention, border behavior, valid-region behavior, or output ordering.
 
 ---
 
-## Phase 2 — Structured Accelerator
+# Phase 2 — AXI Memory-Mapped Accelerator
 
 **Status: CURRENT**
 
-Phase 2 wraps the verified DSP core with a structured accelerator architecture.
+Phase 2 contains two clear hierarchy levels:
 
 ```text
-                    Host / Future AXI
-                           |
-                           v
-                     +-----------+
-                     |  Arbiter  |
-                     +-----------+
-                           |
-                           v
-                     +-----------+
-                     | FSM_CTRL  |
-                     +-----------+
-                       |       |
-                       v       v
-                  +--------+ +--------+
-                  | Input  | | Output |
-                  | Buffer | | Buffer |
-                  +--------+ +--------+
-                       |       ^
-                       v       |
-                  +----------------+
-                  |   Datapath     |
-                  | Verified Core  |
-                  +----------------+
+dsp_image_axi_wrapper
+│
+├── Vivado-generated AXI4-Lite slave logic
+│
+└── dsp_image_top
+    ├── dsp_image_arbiter
+    ├── dsp_image_fsm_ctrl
+    ├── dsp_image_input_memory
+    ├── dsp_image_datapath
+    └── dsp_image_output_memory
 ```
 
-Block responsibilities:
+The AXI wrapper handles AXI protocol behavior. `dsp_image_top` contains the complete custom accelerator.
+
+### Control Ownership
 
 ```text
+FSM
+    = defines when an access/operation is legal
+
 Arbiter
-    = command authority and high-level ownership
-
-FSM Controller
-    = execution sequencing and frame lifecycle
-
-Input / Output
-    = data transport and buffering
+    = decodes and routes host transactions
+      and enforces FSM permissions
 
 Datapath
-    = verified Median + Sobel processing core
+    = reads Input Memory and writes Output Memory during EXEC
+
+Memories
+    = passive storage
 ```
 
-Recommended FSM flow:
+### State Flow
 
 ```text
 IDLE
   |
+  | LOAD
   v
 LOAD
   |
+  | START
   v
-WORK
+EXEC
   |
+  | datapath_done
   v
-DRAIN
+READ
   |
+  | STOP
   v
-DONE
+IDLE
 ```
 
-Detailed Phase 2 interfaces, signals, state behavior, handshakes, and verification rules are defined in:
+### Memory Ownership
+
+```text
+LOAD:
+AXI -> Arbiter -> Input Memory write
+
+EXEC:
+Datapath -> Input Memory read
+Datapath -> Output Memory write
+
+READ:
+Output Memory -> Arbiter -> AXI read
+```
+
+Detailed module interfaces, exact signal names, bus handshakes, memory ownership rules, error rules, and verification requirements are defined in:
 
 [`docs/SPEC_PHASE2.md`](docs/SPEC_PHASE2.md)
 
@@ -205,8 +201,7 @@ o_mag[11:0]
 
 ![image_dsp_top internal DSP pipeline](docs/images/image_dsp_pipeline.png)
 
-Coordinates and valid timing are propagated alongside the pixel stream so that
-the final output remains spatially aligned with the source image.
+Coordinates and valid timing remain aligned through the complete streaming datapath.
 
 ---
 
@@ -216,6 +211,7 @@ the final output remains spatially aligned with the source image.
 image-dsp-benchmark/
 │
 ├── README.md
+├── PROJECT_CONTEXT.md
 │
 ├── docs/
 │   ├── SPEC_PHASE1.md
@@ -223,72 +219,59 @@ image-dsp-benchmark/
 │   └── images/
 │
 ├── python/
-│
 ├── c/
-│
 ├── rtl/
-│
 ├── tb/
-│
 ├── fpga/
 │   ├── ebaz/
 │   └── kr260/
-│
 └── results/
 ```
 
-### Folder Responsibilities
-
 | Folder | Purpose |
 | --- | --- |
-| `docs/` | Technical specifications and architecture documentation for each development phase |
-| `docs/images/` | RTL schematics, block diagrams, and documentation figures |
-| `python/` | Official software golden model, image preprocessing, reference DSP algorithms, verification utilities, and HEX/image conversion tools |
-| `c/` | CPU implementation used for software acceleration experiments and CPU-vs-FPGA benchmarking |
-| `rtl/` | Synthesizable Verilog-2001 implementation of the DSP pipeline and Phase 2 accelerator modules |
-| `tb/` | RTL simulation testbenches, golden-vector loading, output checking, and regression tests |
-| `fpga/` | Board-specific Vivado integration, constraints, synthesis, implementation, and hardware deployment files |
-| `fpga/ebaz/` | EBAZ4205 / Zynq-7010 implementation files |
-| `fpga/kr260/` | AMD Kria KR260 implementation files |
-| `results/` | Golden outputs, RTL results, converted images, benchmark tables, and performance plots |
+| `docs/` | Technical specifications and architecture documentation |
+| `docs/images/` | Block diagrams and RTL schematics |
+| `python/` | Golden model, reference DSP, verification and HEX/PNG utilities |
+| `c/` | CPU DSP implementation and benchmark |
+| `rtl/` | Synthesizable Verilog-2001 RTL |
+| `tb/` | RTL simulation and regression testbenches |
+| `fpga/` | Board-specific Vivado integration and implementation |
+| `results/` | Golden vectors, RTL outputs, images and benchmark results |
 
-The Python execution guide is kept separately in:
-
-[`python/README.md`](python/README.md)
+Python usage is documented in [`python/README.md`](python/README.md).
 
 ---
 
 ## Verification
 
-The project follows golden-model-driven verification.
+Current confirmed result:
 
 ```text
-Python Golden Model
-        |
-        +--------------------+
-        |                    |
-        v                    v
-    C Output             RTL Output
-        |                    |
-        +---------+----------+
-                  |
-                  v
-              Compare
+Python == RTL
+mismatch = 0
+PASS
 ```
 
-Verification requirements:
+Phase 2 must independently pass:
 
-- Python vs RTL mismatch = 0
-- Python vs C mismatch = 0
-- final target: `Python == C == RTL`
-- non-square images must be supported
-- final valid output count must be:
+```text
+Python == dsp_image_top
+mismatch = 0
+```
+
+and after AXI wrapping:
+
+```text
+Python == AXI-controlled Phase 2 RTL
+mismatch = 0
+```
+
+Final Sobel valid-output count:
 
 ```text
 (W - 4) * (H - 4)
 ```
-
-Examples:
 
 | Resolution | Valid outputs |
 | --- | ---: |
@@ -296,9 +279,20 @@ Examples:
 | 512x512 | 258064 |
 | 640x480 | 302736 |
 
-Phase 1 is already verified.
+---
 
-Phase 2 must preserve the same bit-exact output.
+## Resource Note
+
+Phase 2 uses BRAM-backed Input/Output Memory. A full 512x512 8-bit input frame plus a full-size 8-bit output buffer is too large to assume portable across all targets, especially Zynq-7010.
+
+Therefore:
+
+- memory depth is parameterized;
+- simulation may use any supported resolution;
+- hardware frame size must fit the target BRAM budget;
+- full 512x512 storage on a small target may require external memory, tiling, memory reuse, or a later streaming architecture.
+
+The Phase 1 512x512 verification result remains the algorithmic reference.
 
 ---
 
@@ -313,16 +307,7 @@ Phase 2 must preserve the same bit-exact output.
 | E | EBAZ4205 | FPGA PL | RTL Accelerator |
 | F | KR260 | FPGA PL | RTL Accelerator |
 
-### CPU Metrics
-
-- Median latency
-- Sobel latency
-- total DSP latency
-- FPS
-- CPU utilization
-- RAM usage
-
-### FPGA Metrics
+FPGA metrics:
 
 - kernel latency
 - end-to-end latency
@@ -339,30 +324,30 @@ Phase 2 must preserve the same bit-exact output.
 
 ```text
 Phase 1
-Standalone Verified DSP Core
+Verified DSP Core
 [DONE]
 
-        |
-        v
+    |
+    v
 
 Phase 2
-Arbiter + FSM + Input/Output + Datapath
+dsp_image_top + Vivado AXI4-Lite Wrapper
 [CURRENT]
 
-        |
-        v
+    |
+    v
 
 Phase 3
-AXI / PS-PL Integration
+Hardware Bring-up / ARM Software Integration
 
-        |
-        v
+    |
+    v
 
 Phase 4
 CPU vs FPGA Benchmark
 
-        |
-        v
+    |
+    v
 
 Phase 5
 Web Demonstration
@@ -372,65 +357,10 @@ Web Demonstration
 
 ## Documentation
 
-### Phase 1 Specification
-
-[`docs/SPEC_PHASE1.md`](docs/SPEC_PHASE1.md)
-
-Defines:
-
-- DSP algorithms
-- datatype rules
-- coordinate convention
-- border and valid-region rules
-- streaming RTL behavior
-- module interfaces
-- latency budget
-- Phase 1 verification contract
-
-### Phase 2 Specification
-
-[`docs/SPEC_PHASE2.md`](docs/SPEC_PHASE2.md)
-
-Defines:
-
-- Arbiter behavior
-- FSM architecture
-- Input / Output buffering
-- verified Datapath wrapper
-- module interfaces
-- signal definitions
-- handshake rules
-- state transitions
-- error handling
-- synthesis requirements
-- Phase 2 verification plan
-- future AXI integration
-
-### Python Usage
-
-[`python/README.md`](python/README.md)
-
-Contains the commands for:
-
-- generating golden data
-- selecting image resolution
-- verifying RTL output
-- converting `.hex` files to `.png`
-
----
-
-## Contributing
-
-This repository uses Conventional Commits.
-
-Examples:
-
-```text
-feat(rtl): add median 3x3 compare-swap network
-feat(accel): add image DSP FSM controller
-test(accel): add accelerator regression test
-docs: update Phase 2 architecture
-```
+- [`docs/SPEC_PHASE1.md`](docs/SPEC_PHASE1.md) — verified DSP algorithm/RTL contract
+- [`docs/SPEC_PHASE2.md`](docs/SPEC_PHASE2.md) — strict Phase 2 accelerator contract
+- [`python/README.md`](python/README.md) — Python and verification commands
+- [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) — project handoff context
 
 ---
 
