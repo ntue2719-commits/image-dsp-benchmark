@@ -213,6 +213,37 @@ design_1_wrapper
     └── dsp_image_axi_v1_0_0
 ```
 
+### Vivado Block Design
+
+The current KR260 hardware design integrates the Zynq UltraScale+ MPSoC Processing System with the custom Image DSP AXI4-Lite peripheral through the Vivado AXI interconnect.
+
+![KR260 Vivado Block Design](docs/images/kr260_vivado_block_design.png)
+
+The implemented block design contains:
+
+```text
+zynq_ultra_ps_e_0
+ps8_0_axi_periph
+rst_ps8_0_99M
+dsp_image_axi_v1_0_0
+```
+
+The Image DSP accelerator is connected as an AXI4-Lite slave and is controlled by the ARM Processing System.
+
+### Vivado Address Map
+
+The current accelerator is mapped into a 32 MiB physical address aperture.
+
+![KR260 Vivado Address Map](docs/images/kr260_address_map.png)
+
+```text
+Base address : 0xA0000000
+Range        : 32 MiB
+High address : 0xA1FFFFFF
+```
+
+This physical mapping is used by the KR260 Linux MMIO debug software through `/dev/mem`.
+
 ---
 
 ## `dsp_image_top` Interface
