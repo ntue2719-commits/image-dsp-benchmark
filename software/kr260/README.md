@@ -1,6 +1,12 @@
-# Software — KR260 AXI MMIO Control and Debug
+# KR260 Software — AXI MMIO Control and Debug
 
 This directory contains the userspace software used to control and debug the Image DSP accelerator on the **AMD Kria KR260**.
+
+Repository location:
+
+```text
+software/kr260/
+```
 
 Current hardware/software context:
 
@@ -22,10 +28,8 @@ Threshold   : 100
 
 ```text
 software/
-│
-├── README.md
-│
 └── kr260/
+    ├── README.md
     ├── main.c
     └── load_bitstream.sh
 ```
@@ -34,8 +38,9 @@ Files:
 
 | File | Purpose |
 |---|---|
-| `kr260/main.c` | Linux userspace AXI MMIO controller/debug program |
-| `kr260/load_bitstream.sh` | Loads the FPGA bitstream through the Linux FPGA manager |
+| `main.c` | Linux userspace AXI MMIO controller/debug program |
+| `load_bitstream.sh` | Loads the FPGA bitstream through the Linux FPGA manager |
+| `README.md` | KR260 software run/debug guide |
 
 `main.c` is **not** the CPU-only C implementation of the Median-Sobel algorithm.
 
@@ -137,6 +142,16 @@ only confirms that the FPGA manager reports a programmed device. It does not pro
 ---
 
 # 3. Build `main.c`
+
+The commands below assume the board working directory already contains:
+
+```text
+main.c
+load_bitstream.sh
+design_1_wrapper.bit
+noisy.hex
+expected.hex
+```
 
 Compile natively on the KR260:
 
