@@ -1,7 +1,8 @@
 # Technical Specification — Phase 2 AXI Memory-Mapped Image DSP Accelerator
 
-> **Status:** Phase 2 architecture specification  
-> **Phase 1 status:** COMPLETE — `Python == RTL`, mismatch = 0  
+> **Status:** Phase 2 RTL/AXI simulation verified; KR260 PS–PL AXI control operational; real-board bit-exact verification is still BLOCKED (`2` then `4` mismatches / `3600` for repeated 64x64 runs).  
+> **Phase 1 status:** COMPLETE — `Python == RTL`, mismatch = 0 in simulation  
+> **Current hardware target:** AMD Kria KR260 / K26, Vivado 2022.2, Ubuntu Linux on ARM PS  
 > **Purpose:** Define a strict, implementation-ready contract for the AXI-controlled `dsp_image` accelerator.
 
 ---
@@ -19,9 +20,9 @@ If RTL behavior differs from this document, the RTL is considered incorrect unti
 Phase 2 has two levels.
 
 ```text
-dsp_image_axi_wrapper
+dsp_image_axi_v1_0
 │
-├── Vivado-generated AXI4-Lite slave logic
+├── dsp_image_axi_v1_0_S00_AXI    // Vivado AXI4-Lite slave + internal req/ACK bridge
 │
 └── dsp_image_top
     ├── dsp_image_arbiter
@@ -39,7 +40,7 @@ ARM PS
 AXI4-Lite
   |
   v
-dsp_image_axi_wrapper
+dsp_image_axi_v1_0 / dsp_image_axi_v1_0_S00_AXI
   |
   | internal request/response bus
   v
@@ -134,19 +135,27 @@ i_clk
 Reset:
 
 ```verilog
-i_rst
+i_rst_n
 ```
 
 Rules:
 
 ```text
-i_rst is active-high.
-All custom control state is synchronous to i_clk.
+i_rst_n is active-low.
+All custom Phase 2 control state is synchronous to i_clk.
 No gated clock is allowed.
 No generated internal clock is allowed.
 ```
 
-The Vivado-generated AXI wrapper MAY use the Vivado naming style internally, but the custom core boundary SHALL normalize clock/reset to `i_clk` and `i_rst`.
+The Vivado AXI boundary uses `S_AXI_ARESETN`. The custom Phase 2 core boundary SHALL normalize clock/reset to `i_clk` and active-low `i_rst_n`.
+
+The frozen Phase 1 core is the only legacy boundary that uses active-high `i_rst`. `dsp_image_datapath` SHALL convert polarity locally:
+
+```text
+Phase 2 i_rst_n = 0 -> Phase 1 i_rst = 1
+```
+
+`ST_PREP` SHALL additionally provide one complete active-high reset cycle to the Phase 1 core before each new frame execution.
 
 ---
 
@@ -171,6 +180,16 @@ RREADY
 
 The wrapper SHALL translate AXI operations into the following internal request/response interface.
 
+Current packaged AXI4-Lite configuration:
+
+```text
+C_S00_AXI_DATA_WIDTH = 32
+C_S00_AXI_ADDR_WIDTH = 25
+local IP aperture     = 32 MiB = 0x0200_0000 bytes
+```
+
+The bus-independent `dsp_image_top` interface keeps 32-bit internal address signals; the AXI slave supplies the local IP offset through this interface.
+
 ## 5.1 `dsp_image_top` external interface
 
 ```verilog
@@ -180,7 +199,7 @@ module dsp_image_top #(
     parameter MEM_ADDR_W   = 12
 )(
     input  wire        i_clk,
-    input  wire        i_rst,
+    input  wire        i_rst_n,
 
     // Write request
     input  wire        i_bus_wr_req,
@@ -255,12 +274,14 @@ Phase 2 baseline uses a simple, verification-friendly format:
 one 8-bit pixel per 32-bit AXI word
 ```
 
-For an input pixel write:
+For a CTRL or input-pixel write:
 
 ```text
-pixel = i_bus_wr_data[7:0]
+command/pixel = i_bus_wr_data[7:0]
 i_bus_wr_strb MUST equal 4'b0001
 ```
+
+On the current KR260 Linux software path, `main.c` uses an aligned `volatile uint8_t` MMIO store for CTRL and Input Memory writes so that the AXI transaction is expected to carry `WSTRB=4'b0001`. A 32-bit store may generate `WSTRB=4'b1111` and violates this Phase 2 contract.
 
 For an output pixel read:
 
@@ -317,6 +338,23 @@ y = 2 + (k / (IMAGE_WIDTH-4))
 
 This avoids undefined/stale border memory.
 
+Current KR260 physical mapping:
+
+```text
+IP physical BASE = 0xA000_0000
+IP physical HIGH = 0xA1FF_FFFF
+
+CTRL             = 0xA000_0000
+STATUS           = 0xA000_0004
+INFO_WIDTH       = 0xA000_0008
+INFO_HEIGHT      = 0xA000_000C
+INFO_THRESHOLD   = 0xA000_0010
+Input pixel 0    = 0xA010_0000
+Output pixel 0   = 0xA110_0000
+```
+
+These physical addresses are a KR260 integration mapping; the logical offsets above remain the Phase 2 IP contract.
+
 ---
 
 # 9. CTRL Register
@@ -334,7 +372,7 @@ Rules:
 - A command is generated only on an acknowledged CTRL write.
 - Exactly one of bits `[2:0]` SHALL be set per command write.
 - Multiple command bits set simultaneously SHALL return bus error and assert access error.
-- `CTRL` reads MAY return zero.
+- `CTRL` reads SHALL return zero.
 
 Legal state:
 
@@ -402,7 +440,7 @@ This ownership rule is normative.
 ```verilog
 module dsp_image_fsm_ctrl (
     input  wire       i_clk,
-    input  wire       i_rst,
+    input  wire       i_rst_n,
 
     // Commands from Arbiter
     input  wire       i_load_cmd,
@@ -502,10 +540,13 @@ Those EXEC-side operations belong to the Datapath.
 
 ```verilog
 module dsp_image_arbiter #(
-    parameter MEM_ADDR_W = 12
+    parameter MEM_ADDR_W    = 12,
+    parameter IMAGE_WIDTH   = 64,
+    parameter IMAGE_HEIGHT  = 64,
+    parameter THRESHOLD     = 100
 )(
     input  wire                    i_clk,
-    input  wire                    i_rst,
+    input  wire                    i_rst_n,
 
     // Internal bus from AXI wrapper
     input  wire                    i_bus_wr_req,
@@ -555,6 +596,7 @@ module dsp_image_arbiter #(
 ## 14.1 Always legal
 
 ```text
+CTRL read (returns zero)
 STATUS read
 INFO_WIDTH read
 INFO_HEIGHT read
@@ -716,14 +758,16 @@ The Datapath SHALL:
 
 ```text
 1. accept one-cycle i_start
-2. reset internal frame counters for the new execution
-3. request Input Memory pixels in row-major order
-4. account for Input Memory read latency
-5. feed Phase 1 i_valid/i_pixel
-6. capture Phase 1 o_valid/o_pixel/o_x/o_y
-7. write only final valid-region pixels to Output Memory
-8. maintain input/output counts
-9. assert o_done after the final output write
+2. clear per-frame counters and enter ST_PREP
+3. hold the frozen Phase 1 core in active-high reset for one complete ST_PREP cycle
+4. request Input Memory pixels in row-major order
+5. account for Input Memory read latency
+6. feed Phase 1 i_valid/i_pixel
+7. capture Phase 1 o_valid/o_pixel/o_x/o_y
+8. write only final valid-region pixels to Output Memory
+9. maintain request/input/output counts
+10. enter ST_COMMIT after scheduling the final Output Memory write
+11. assert o_done only after the final registered Output Memory write has been committed
 ```
 
 ## 16.2 Interface
@@ -735,7 +779,7 @@ module dsp_image_datapath #(
     parameter MEM_ADDR_W   = 12
 )(
     input  wire                    i_clk,
-    input  wire                    i_rst,
+    input  wire                    i_rst_n,
     input  wire                    i_start,
 
     // Input Memory read
@@ -795,13 +839,25 @@ y = 2 + (k / (IMAGE_WIDTH-4))
 
 ## 16.6 Completion
 
-`o_done` SHALL pulse/assert only after the final valid result has been written:
+`o_done` SHALL pulse only after the final valid result has actually been committed to Output Memory.
+
+The required sequence is:
 
 ```text
-output_count == N_OUTPUT
+ST_RUN:
+    final core_out_valid
+    -> assert o_out_we for output index N_OUTPUT-1
+    -> transition to ST_COMMIT
+
+ST_COMMIT:
+    Output Memory samples the final registered o_out_we/o_out_waddr/o_out_wdata
+    -> assert o_done
+    -> transition to ST_DONE
 ```
 
-The last input request by itself SHALL NOT imply completion.
+Therefore, observing the final `core_out_valid`, issuing the last input request, or merely incrementing the output counter SHALL NOT by itself imply completion.
+
+The datapath SHALL support a later legal START after system-level STOP -> IDLE -> LOAD without requiring a global reset; each accepted new START SHALL pass through `ST_PREP` again.
 
 ---
 
@@ -993,7 +1049,7 @@ No other block SHALL bypass the ownership rules above.
 
 # 20. Reset Behavior
 
-On `i_rst`:
+On synchronous active-low Phase 2 reset (`i_rst_n = 0`):
 
 ```text
 FSM -> IDLE
@@ -1003,6 +1059,14 @@ datapath busy/done/error -> 0
 datapath counters -> 0
 pending bus transaction state -> idle
 ```
+
+At the Phase 1 boundary, the datapath SHALL generate active-high:
+
+```text
+core_rst = (!i_rst_n) || (datapath_state == ST_PREP)
+```
+
+This polarity conversion is deliberate and SHALL NOT be removed unless the frozen Phase 1 interface itself is intentionally revised.
 
 Memory contents do not need to be cleared because:
 
@@ -1037,8 +1101,10 @@ Requirements:
 
 - `IMAGE_WIDTH`, `IMAGE_HEIGHT`, and memory depths SHALL be parameterized.
 - The chosen hardware frame size SHALL fit the actual BRAM budget.
-- EBAZ4205 hardware bring-up MAY use a smaller resolution.
-- If full 512x512 on a small device becomes mandatory, the architecture SHALL be revised to use external memory, tiling, memory reuse, or a streaming scheme.
+- The current KR260 hardware build uses `64x64` with `MEM_ADDR_W=12`.
+- A `512x512` build requires at least `MEM_ADDR_W=18`; a `640x480` build requires at least `MEM_ADDR_W=19`.
+- Larger full-frame builds SHALL NOT be generated until actual K26 BRAM capacity and implementation utilization are checked.
+- If the required full-frame buffers do not fit, the architecture SHALL be revised to use external DDR, tiling, memory reuse, or a streaming/DMA scheme.
 
 This resource rule does not change the Phase 1 512x512 algorithmic reference.
 
@@ -1058,8 +1124,24 @@ Verification order SHALL be:
 7. AXI wrapper TB
 8. synthesis
 9. implementation
-10. ARM software test
+10. ARM software / KR260 hardware test
 ```
+
+Current verified simulation evidence:
+
+```text
+Input Memory TB                     : 12434 checks, 0 errors
+Output Memory TB                    : 7408 checks, 0 errors
+Datapath 512x512                    : 516133 checks, 0 errors
+FSM TB                              : 28 checks, 0 errors
+Arbiter TB                          : 40 checks, 0 errors
+dsp_image_top 512x512 single-frame  : PASS
+dsp_image_top 640x480 single-frame  : PASS
+dsp_image_top 512x512 multi-frame   : 2 frames, 0 errors
+AXI end-to-end 64x64 multi-frame    : 2 frames, 24041 checks, 0 errors
+```
+
+These simulation results SHALL NOT be used as proof of real-board bit-exact correctness.
 
 ## 22.1 Memory TB
 
@@ -1130,6 +1212,20 @@ ERROR = 0
 
 Verify the Vivado AXI wrapper correctly translates AXI transactions into the internal request/ACK interface.
 
+The AXI regression SHALL include:
+
+```text
+independent AW/W acceptance
+internal request held until core ACK
+B/R response backpressure
+SLVERR for illegal access
+sticky ERROR behavior
+active-low reset recovery
+multi-frame execution
+```
+
+Current 64x64 AXI end-to-end multi-frame simulation result is PASS: 2 frames, 8199 AXI writes, 8580 AXI reads, 24041 checks, 0 errors.
+
 ---
 
 # 23. Synthesis / Implementation Rules
@@ -1162,9 +1258,17 @@ LUT
 FF
 BRAM
 DSP
-timing
-Fmax
+Timing Summary
+WNS
+WHS
+all constrained clocks
+unconstrained paths
+Fmax (only if derived from valid timing data)
 ```
+
+A generated bitstream or FPGA-manager state `operating` SHALL NOT be treated as proof of timing closure.
+
+Current project status: synthesis and implementation have been run, but the actual post-route WNS/WHS, unconstrained-path review, and utilization report values have not yet been preserved in this specification.
 
 ---
 
@@ -1172,50 +1276,62 @@ Fmax
 
 ## Core RTL
 
-- [ ] `dsp_image_input_memory.v`
-- [ ] `dsp_image_output_memory.v`
-- [ ] `dsp_image_datapath.v`
-- [ ] `dsp_image_fsm_ctrl.v`
-- [ ] `dsp_image_arbiter.v`
-- [ ] `dsp_image_top.v`
+- [x] `dsp_image_input_memory.v`
+- [x] `dsp_image_output_memory.v`
+- [x] `dsp_image_datapath.v`
+- [x] `dsp_image_fsm_ctrl.v`
+- [x] `dsp_image_arbiter.v`
+- [x] `dsp_image_top.v`
 
 ## Core Verification
 
-- [ ] memory TBs PASS
-- [ ] datapath wrapper TB PASS
-- [ ] FSM TB PASS
-- [ ] Arbiter TB PASS
-- [ ] `dsp_image_top` TB PASS
-- [ ] Python == `dsp_image_top`
-- [ ] mismatch = 0
+- [x] memory TBs PASS
+- [x] datapath wrapper TB PASS
+- [x] FSM TB PASS
+- [x] Arbiter TB PASS
+- [x] `dsp_image_top` TB PASS
+- [x] Python == `dsp_image_top` in simulation
+- [x] simulation mismatch = 0
 
 ## AXI
 
-- [ ] Vivado AXI4-Lite wrapper generated
-- [ ] request/ACK bridge implemented
-- [ ] AXI write path PASS
-- [ ] AXI read path PASS
-- [ ] CTRL/STATUS PASS
-- [ ] Input/Output region access PASS
+- [x] Vivado AXI4-Lite wrapper generated
+- [x] request/ACK bridge implemented
+- [x] AXI write path PASS in simulation
+- [x] AXI read path PASS in simulation
+- [x] CTRL/STATUS PASS in simulation and basic KR260 bring-up
+- [x] Input/Output region access operational on KR260
 
 ## FPGA
 
-- [ ] synthesis PASS
-- [ ] implementation PASS
-- [ ] timing PASS
-- [ ] utilization reported
-- [ ] ARM can LOAD input
-- [ ] ARM can START processing
-- [ ] ARM can poll STATUS
-- [ ] ARM can READ output
-- [ ] ARM can STOP/return core to IDLE
+- [x] synthesis completed
+- [x] implementation completed
+- [ ] timing PASS documented with actual post-route WNS/WHS and unconstrained-path review
+- [ ] utilization report values preserved
+- [x] ARM can LOAD input
+- [x] ARM can START processing
+- [x] ARM can poll STATUS
+- [x] ARM can READ output
+- [x] ARM can STOP/return core to IDLE
+- [ ] KR260 FPGA output == Python golden with `mismatch = 0`
+- [ ] repeated identical KR260 frames are bit-exact and deterministic (target: 10+ consecutive frames)
+
+Current KR260 blocker:
+
+```text
+64x64 frame 1: 2 / 3600 mismatches
+64x64 frame 2: 4 / 3600 mismatches
+same input produced different output at dense indices 1948 and 2007
+```
+
+Therefore Phase 2 SHALL NOT be declared hardware-correct until the two final FPGA correctness items above are satisfied.
 
 ---
 
 # 25. Final Engineering Rule
 
 ```text
-AXI wrapper
+AXI wrapper (`dsp_image_axi_v1_0` / `dsp_image_axi_v1_0_S00_AXI`)
     = protocol boundary
 
 FSM
@@ -1231,4 +1347,4 @@ Memories
     = passive storage
 ```
 
-> Verify `dsp_image_top` without AXI first. Only after the core is correct shall it be wrapped by the Vivado-generated AXI4-Lite interface.
+> Verify `dsp_image_top` without AXI first. Only after the core is correct shall it be wrapped by the Vivado-generated AXI4-Lite interface. Simulation completion does not override the separate requirement for bit-exact, deterministic KR260 hardware verification.
