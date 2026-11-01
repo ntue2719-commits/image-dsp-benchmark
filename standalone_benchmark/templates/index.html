@@ -1,0 +1,414 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+
+<title>{{ board }} Image DSP Benchmark</title>
+
+<style>
+body {
+    font-family: system-ui, sans-serif;
+    margin: 0;
+    background: #f5f5f5;
+    color: #111;
+}
+
+.wrap {
+    max-width: 1100px;
+    margin: auto;
+    padding: 28px;
+}
+
+.card {
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 12px;
+    padding: 18px;
+    margin: 14px 0;
+}
+
+h1,
+h2 {
+    margin-top: 0;
+}
+
+.grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 12px;
+}
+
+.metric {
+    border: 1px solid #ddd;
+    border-radius: 10px;
+    padding: 14px;
+}
+
+.big {
+    font-size: 1.6rem;
+    font-weight: 700;
+}
+
+.ok {
+    color: #087a37;
+}
+
+.bad {
+    color: #b42318;
+}
+
+table {
+    border-collapse: collapse;
+    width: 100%;
+}
+
+th,
+td {
+    padding: 8px;
+    border-bottom: 1px solid #ddd;
+    text-align: left;
+}
+
+code {
+    background: #eee;
+    padding: 2px 5px;
+    border-radius: 4px;
+}
+
+.hint {
+    color: #555;
+    font-size: 0.93rem;
+}
+
+input,
+button {
+    font: inherit;
+    padding: 9px;
+}
+
+button {
+    cursor: pointer;
+    font-weight: 650;
+}
+</style>
+</head>
+
+<body>
+<div class="wrap">
+
+<h1>{{ board }} - Median-Sobel Benchmark</h1>
+
+<div class="card">
+    <form method="post" action="/benchmark" enctype="multipart/form-data">
+        <p>
+            <b>Upload authoritative noisy grayscale HEX</b>
+            (one 8-bit hex pixel per line).
+        </p>
+
+        <input
+            type="file"
+            name="file"
+            accept=".hex,.txt"
+            required
+        >
+
+        <button type="submit">
+            Run benchmark
+        </button>
+    </form>
+
+    <p class="hint">
+        Current default geometry: 64x64, threshold 100.
+        KR260 compares Python vs ARM C vs FPGA RTL.
+        Orange Pi compares Python vs ARM C.
+    </p>
+</div>
+
+
+{% if result %}
+
+<!-- ============================================================
+     CORRECTNESS
+     ============================================================ -->
+
+<div class="card">
+    <h2>Correctness</h2>
+
+    <div class="grid">
+
+        <div class="metric">
+            <div>Python golden</div>
+            <div class="big ok">
+                REFERENCE
+            </div>
+        </div>
+
+        <div class="metric">
+            <div>ARM C vs Python</div>
+
+            <div class="big {{ 'ok' if result.arm_c.errors_vs_python == 0 else 'bad' }}">
+                {{ result.arm_c.errors_vs_python }} errors
+            </div>
+        </div>
+
+        {% if result.fpga_rtl %}
+
+        <div class="metric">
+            <div>FPGA RTL vs Python</div>
+
+            <div class="big {{ 'ok' if result.fpga_rtl.errors_vs_python == 0 else 'bad' }}">
+                {{ result.fpga_rtl.errors_vs_python }} errors
+            </div>
+        </div>
+
+        {% endif %}
+
+    </div>
+</div>
+
+
+<!-- ============================================================
+     TIMING
+     ============================================================ -->
+
+<div class="card">
+    <h2>Timing</h2>
+
+    <table>
+
+        <tr>
+            <th>Backend</th>
+            <th>Metric</th>
+            <th>Time (ms)</th>
+        </tr>
+
+        <tr>
+            <td>Python</td>
+            <td>Golden compute</td>
+            <td>
+                {{ '%.6f'|format(result.python.compute_ms) }}
+            </td>
+        </tr>
+
+        <tr>
+            <td>ARM C</td>
+            <td>Kernel compute</td>
+            <td>
+                {{
+                    '%.6f'|format(result.arm_c.compute_ms)
+                    if result.arm_c.compute_ms is not none
+                    else 'n/a'
+                }}
+            </td>
+        </tr>
+
+        <tr>
+            <td>ARM C</td>
+            <td>Process wall</td>
+            <td>
+                {{ '%.6f'|format(result.arm_c.process_wall_ms) }}
+            </td>
+        </tr>
+
+
+        {% if result.fpga_rtl %}
+
+        <tr>
+            <td>FPGA</td>
+            <td>Input MMIO (main.c internal)</td>
+            <td>
+                {{
+                    '%.6f'|format(result.fpga_rtl.input_mmio_internal_ms)
+                    if result.fpga_rtl.input_mmio_internal_ms is not none
+                    else 'n/a'
+                }}
+            </td>
+        </tr>
+
+        <tr>
+            <td>FPGA</td>
+            <td>
+                START -> DONE
+                (main.c internal)
+            </td>
+            <td>
+                {{
+                    '%.6f'|format(result.fpga_rtl.start_to_done_internal_ms)
+                    if result.fpga_rtl.start_to_done_internal_ms is not none
+                    else 'n/a'
+                }}
+            </td>
+        </tr>
+
+        <tr>
+            <td>FPGA</td>
+            <td>
+                START -> DONE
+                (Python process observed)
+            </td>
+            <td>
+                {{
+                    '%.6f'|format(result.fpga_rtl.start_to_done_observed_ms)
+                    if result.fpga_rtl.start_to_done_observed_ms is not none
+                    else 'n/a'
+                }}
+            </td>
+        </tr>
+
+        <tr>
+            <td>FPGA</td>
+            <td>Output MMIO (main.c internal)</td>
+            <td>
+                {{
+                    '%.6f'|format(result.fpga_rtl.output_mmio_internal_ms)
+                    if result.fpga_rtl.output_mmio_internal_ms is not none
+                    else 'n/a'
+                }}
+            </td>
+        </tr>
+
+        <tr>
+            <td>FPGA</td>
+            <td>Whole backend sequence wall</td>
+            <td>
+                {{ '%.6f'|format(result.fpga_rtl.backend_wall_ms) }}
+            </td>
+        </tr>
+
+        {% endif %}
+
+    </table>
+
+    <p class="hint">
+        ARM C kernel time measures only the native C Median-Sobel
+        computation. FPGA internal START -> DONE is measured inside
+        main.c from the START MMIO write until READ|DONE is observed
+        using tight STATUS polling. It includes a small amount of
+        MMIO and polling overhead and is therefore host-observed
+        accelerator latency rather than a pure PL cycle-count
+        measurement.
+    </p>
+
+</div>
+
+
+<!-- ============================================================
+     PERFORMANCE RATIO
+     ============================================================ -->
+
+{% if result.fpga_rtl and result.ratios %}
+
+<div class="card">
+    <h2>Performance Comparison</h2>
+
+    <div class="grid">
+
+        {% if result.ratios.arm_compute_over_fpga_internal_start_done is defined %}
+
+        <div class="metric">
+            <div>
+                ARM C / FPGA internal START -> DONE
+            </div>
+
+            <div class="big">
+                {{
+                    '%.2f'|format(
+                        result.ratios.arm_compute_over_fpga_internal_start_done
+                    )
+                }}x
+            </div>
+        </div>
+
+        {% endif %}
+
+
+        {% if result.ratios.arm_compute_over_fpga_process_observed is defined %}
+
+        <div class="metric">
+            <div>
+                ARM C / FPGA process-observed
+            </div>
+
+            <div class="big">
+                {{
+                    '%.3f'|format(
+                        result.ratios.arm_compute_over_fpga_process_observed
+                    )
+                }}x
+            </div>
+        </div>
+
+        {% endif %}
+
+    </div>
+
+    <p class="hint">
+        Use the internal START -> DONE ratio for the software-visible
+        accelerator comparison. The process-observed ratio is retained
+        only as a diagnostic because it includes sudo, process startup,
+        /dev/mem access, mmap, and process cleanup overhead.
+    </p>
+
+</div>
+
+{% endif %}
+
+
+<!-- ============================================================
+     MISMATCH DETAILS
+     ============================================================ -->
+
+{% if result.arm_c.mismatches or
+      (result.fpga_rtl and result.fpga_rtl.mismatches) %}
+
+<div class="card">
+
+    <h2>First Mismatches</h2>
+
+    {% if result.arm_c.mismatches %}
+
+    <h3>ARM C</h3>
+
+    <pre>{{ result.arm_c.mismatches }}</pre>
+
+    {% endif %}
+
+
+    {% if result.fpga_rtl and result.fpga_rtl.mismatches %}
+
+    <h3>FPGA RTL</h3>
+
+    <pre>{{ result.fpga_rtl.mismatches }}</pre>
+
+    {% endif %}
+
+</div>
+
+{% endif %}
+
+
+<!-- ============================================================
+     RESULT FILE
+     ============================================================ -->
+
+<div class="card">
+
+    <b>Saved result:</b>
+
+    <code>{{ result_dir }}</code>
+
+    <br>
+
+    <a href="/results/{{ result.timestamp }}/result.json">
+        Download result.json
+    </a>
+
+</div>
+
+{% endif %}
+
+
+</div>
+</body>
+</html>
