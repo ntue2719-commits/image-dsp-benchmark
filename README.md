@@ -1,82 +1,90 @@
-# Embedded DSP Image Processing Benchmark
+# Median-Sobel Image Processing Accelerator on FPGA SoC
 
-[![RTL](https://img.shields.io/badge/RTL-Verilog--2001-blue)](https://en.wikipedia.org/wiki/Verilog)
-[![Phase 1](https://img.shields.io/badge/Phase%201-PASS-brightgreen)](#current-status)
-[![Phase 2](https://img.shields.io/badge/Phase%202-Simulation%20PASS-brightgreen)](#phase-2--axi-memory-mapped-accelerator)
-[![KR260](https://img.shields.io/badge/KR260-Hardware%20Debug-orange)](#kr260-hardware-status)
-[![License](https://img.shields.io/badge/license-MIT-lightgrey)](#license)
+<p align="center">
+  <b>Streaming RTL Image Processing · AXI4-Lite SoC Integration · AMD Kria KR260 · Linux MMIO · Python / ARM C / FPGA Verification</b>
+</p>
 
-A deterministic integer-only image DSP project for **salt-and-pepper noise removal and Sobel edge detection**, implemented with:
-
-- a Python golden model;
-- a CPU C baseline (planned);
-- synthesizable Verilog-2001 RTL;
-- an AXI4-Lite memory-mapped accelerator running on AMD Kria KR260.
-
-The current hardware bring-up target is **AMD Kria KR260 / K26 Zynq UltraScale+ MPSoC** with Ubuntu Linux running on the ARM Processing System (PS).
-
-Final project verification target:
-
-```text
-Python == C == FPGA RTL
-mismatch = 0
-```
-
-Current verified status:
-
-```text
-Phase 1 streaming RTL:
-Python == RTL
-mismatch = 0
-PASS
-
-Phase 2 RTL / AXI simulation:
-PASS
-
-KR260 physical FPGA:
-AXI communication operational
-hardware output NOT YET bit-exact
-```
+<p align="center">
+  <img src="https://img.shields.io/badge/RTL-Verilog--2001-blue" alt="RTL">
+  <img src="https://img.shields.io/badge/Phase%201-VERIFIED-brightgreen" alt="Phase 1">
+  <img src="https://img.shields.io/badge/Phase%202-SIM%20VERIFIED-brightgreen" alt="Phase 2">
+  <img src="https://img.shields.io/badge/100%20MHz-TIMING%20MET-brightgreen" alt="Timing">
+  <img src="https://img.shields.io/badge/KR260-HARDWARE%20DEBUG-orange" alt="KR260">
+  <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="License">
+</p>
 
 ---
 
-## DSP Pipeline
+## Overview
+
+This project implements a complete **Median-Sobel image-processing accelerator** on an FPGA SoC platform.
+
+The system combines:
+
+- deterministic Python golden-model generation;
+- native ARM C software execution;
+- synthesizable Verilog-2001 RTL;
+- streaming 3x3 neighborhood processing;
+- Median filtering for salt-and-pepper noise removal;
+- Sobel edge detection;
+- AXI4-Lite memory-mapped accelerator control;
+- Ubuntu Linux userspace MMIO;
+- physical deployment on the AMD Kria KR260;
+- repeated Python / ARM C / FPGA correctness and timing experiments.
+
+The hardware accelerator is implemented in the Programmable Logic of the Kria K26 SoM, while Ubuntu Linux running on the ARM Cortex-A53 Processing System controls it through AXI4-Lite.
+
+<p align="center">
+  <img src="docs/images/kr260_system_architecture.png" width="760" alt="KR260 system architecture">
+</p>
+
+<p align="center">
+  <i>System-level hardware/software architecture on the AMD Kria KR260.</i>
+</p>
+
+---
+
+# Project Highlights
+
+## FPGA Image-Processing Pipeline
 
 ```text
 RGB Image
-   |
-   v
+    |
+    v
 Grayscale
-   |
-   v
+    |
+    v
 Salt & Pepper Noise
-   |
-   v
+    |
+    v
 Median 3x3
-   |
-   v
+    |
+    v
 Sobel 3x3
-   |
-   v
+    |
+    v
 |Gx| + |Gy|
-   |
-   v
+    |
+    v
 Threshold >= 100
-   |
-   v
+    |
+    v
 Binary Edge Image
 ```
 
-Offline preprocessing uses:
+Offline preprocessing uses deterministic integer arithmetic:
 
 ```text
 Y = (77R + 150G + 29B) >> 8
 
 salt-and-pepper probability = 5%
-seed = 12345
+random seed                = 12345
 ```
 
-The final valid output region excludes two pixels on every border:
+The FPGA receives the already generated noisy grayscale frame.
+
+The final valid region is:
 
 ```text
 x = 2 ... W-3
@@ -86,281 +94,126 @@ N_INPUT  = W * H
 N_OUTPUT = (W - 4) * (H - 4)
 ```
 
+Current physical KR260 configuration:
+
+```text
+Input resolution = 64 x 64
+Input pixels     = 4096
+Valid outputs    = 3600
+Threshold        = 100
+PL clock         = 100 MHz
+```
+
 ---
 
-# Current Status
+# Phase 1 — Streaming Image DSP Core
 
-## Phase 1 — Verified Streaming DSP Core
-
-**Status: COMPLETE**
-
-The Phase 1 streaming core is the frozen compute reference.
+**Status: VERIFIED AND FROZEN**
 
 ```text
 image_dsp_top
-│
-├── line_buffer #1
-├── window_3x3 #1
-├── median_3x3
-├── line_buffer #2
-├── window_3x3 #2
-├── sobel_3x3
-├── gradient_mag
-└── threshold
+|
++-- line_buffer #1
++-- window_3x3 #1
++-- median_3x3
++-- line_buffer #2
++-- window_3x3 #2
++-- sobel_3x3
++-- gradient_mag
++-- threshold
 ```
 
-Verified simulation examples:
+<p align="center">
+  <img src="docs/images/image_dsp_pipeline.png" width="900" alt="Phase 1 image DSP pipeline">
+</p>
 
-| Resolution | Inputs | Valid outputs | Result |
-|---|---:|---:|---|
-| 64x64 | 4096 | 3600 | PASS |
-| 512x512 | 262144 | 258064 | PASS |
-| 640x480 | 307200 | 302736 | PASS |
+<p align="center">
+  <i>Phase 1 streaming Median-Sobel datapath.</i>
+</p>
 
-The 512x512 baseline produced:
+### Verified RTL Results
 
-```text
-inputs   = 262144
-outputs  = 258064
-expected = 258064
-errors   = 0
-PASS
-```
+| Resolution | Input pixels | Valid outputs | Mismatches | Result |
+|---|---:|---:|---:|---|
+| 64x64 | 4,096 | 3,600 | 0 | PASS |
+| 512x512 | 262,144 | 258,064 | 0 | PASS |
+| 640x480 | 307,200 | 302,736 | 0 | PASS |
 
-Phase 2 may wrap this core but must not silently change its:
+A two-frame 512x512 regression also completed with zero errors.
 
-- arithmetic;
-- coordinate convention;
-- border behavior;
-- valid-region behavior;
-- output raster ordering.
+### Registered Pipeline Latency
 
-### Phase 1 top-level interface
+| Stage | Latency |
+|---|---:|
+| Line Buffer 1 | 1 clk |
+| Window Generator 1 | 0 clk |
+| Median 3x3 | 1 clk |
+| Line Buffer 2 | 1 clk |
+| Window Generator 2 | 0 clk |
+| Sobel 3x3 | 1 clk |
+| Magnitude + Threshold | 0 clk |
+| **Total registered latency** | **4 clk** |
 
-```text
-Inputs
-------
-i_clk
-i_rst                  active-HIGH, Phase 1 local reset only
-i_valid
-i_pixel[7:0]
+The Median filter uses a nine-stage **combinational** odd-even compare-swap network followed by one output register.
 
-Outputs
--------
-o_valid
-o_pixel[7:0]
-o_x[11:0]
-o_y[11:0]
-o_mag[11:0]
-```
-
-![Phase 1 streaming DSP architecture](docs/images/image_dsp_pipeline.png)
+The nine sorting stages are not nine clock cycles.
 
 ---
 
-# Phase 2 — AXI Memory-Mapped Accelerator
+# Phase 2 — Processor-Controlled Accelerator
 
-**Status: RTL + AXI SIMULATION VERIFIED; KR260 HARDWARE DEBUG IN PROGRESS**
+**Status: RTL + AXI SIMULATION VERIFIED**
 
-Phase 2 wraps the frozen Phase 1 core with host-controlled input/output memories, an access-control FSM, an arbiter, and an AXI4-Lite protocol wrapper.
+<p align="center">
+  <img src="docs/images/dsp_image_phase2_architecture.png" width="900" alt="Phase 2 architecture">
+</p>
+
+<p align="center">
+  <i>Processor-controlled Phase 2 accelerator architecture.</i>
+</p>
+
+RTL hierarchy:
 
 ```text
 dsp_image_axi_v1_0
-│
-└── dsp_image_axi_v1_0_S00_AXI
-    │
-    └── dsp_image_top
-        ├── dsp_image_arbiter
-        ├── dsp_image_fsm_ctrl
-        ├── dsp_image_input_memory
-        ├── dsp_image_datapath
-        │   └── image_dsp_top
-        └── dsp_image_output_memory
+|
++-- dsp_image_axi_v1_0_S00_AXI
+    |
+    +-- dsp_image_top
+        |
+        +-- dsp_image_arbiter
+        +-- dsp_image_fsm_ctrl
+        +-- dsp_image_input_memory
+        +-- dsp_image_datapath
+        |   |
+        |   +-- image_dsp_top
+        |
+        +-- dsp_image_output_memory
 ```
 
-**No DMA is used in the current Phase 2 architecture.**
+Phase 2 provides:
 
-Raw AXI AW/W/B and AR/R channels terminate in the Vivado AXI wrapper. `dsp_image_top` receives only the internal request/response bus.
+- frame storage;
+- processor access control;
+- accelerator state management;
+- Phase 1 reset and execution control;
+- dense result capture;
+- AXI4-Lite software access.
+
+**DMA is not used in the current implementation.**
 
 ---
 
-## System Architecture
-
-```text
-Ubuntu Linux / ARM Cortex-A53 PS
-              |
-              | AXI4-Lite memory-mapped
-              v
-       AXI Interconnect
-              |
-              v
-    dsp_image_axi_v1_0
-              |
-              v
-       dsp_image_top
-```
-
-![KR260 PS-PL system architecture](docs/images/kr260_system_architecture.png)
-
-Current Vivado integration:
-
-```text
-design_1_wrapper
-└── design_1
-    ├── zynq_ultra_ps_e_0
-    ├── ps8_0_axi_periph
-    ├── rst_ps8_0_99M
-    └── dsp_image_axi_v1_0_0
-```
-
-### Vivado Block Design
-
-The current KR260 hardware design integrates the Zynq UltraScale+ MPSoC Processing System with the custom Image DSP AXI4-Lite peripheral through the Vivado AXI interconnect.
-
-![KR260 Vivado Block Design](docs/images/kr260_vivado_block_design.png)
-
-The implemented block design contains:
-
-```text
-zynq_ultra_ps_e_0
-ps8_0_axi_periph
-rst_ps8_0_99M
-dsp_image_axi_v1_0_0
-```
-
-The Image DSP accelerator is connected as an AXI4-Lite slave and is controlled by the ARM Processing System.
-
-### Vivado Address Map
-
-The current accelerator is mapped into a 32 MiB physical address aperture.
-
-![KR260 Vivado Address Map](docs/images/kr260_address_map.png)
-
-```text
-Base address : 0xA0000000
-Range        : 32 MiB
-High address : 0xA1FFFFFF
-```
-
-This physical mapping is used by the KR260 Linux MMIO debug software through `/dev/mem`.
-
----
-
-## `dsp_image_top` Interface
-
-Phase 2 custom RTL uses an **active-low synchronous reset**:
-
-```text
-i_rst_n = 0  -> reset asserted
-i_rst_n = 1  -> normal operation
-```
-
-The unchanged Phase 1 core still uses active-high `i_rst`; reset polarity is converted locally inside `dsp_image_datapath`.
-
-```text
-dsp_image_top #(
-    IMAGE_WIDTH,
-    IMAGE_HEIGHT,
-    MEM_ADDR_W
-)
-
-Inputs
-------
-i_clk
-i_rst_n
-
-i_bus_wr_req
-i_bus_wr_addr[31:0]
-i_bus_wr_data[31:0]
-i_bus_wr_strb[3:0]
-
-i_bus_rd_req
-i_bus_rd_addr[31:0]
-
-Outputs
--------
-o_bus_wr_ack
-o_bus_wr_err
-
-o_bus_rd_ack
-o_bus_rd_data[31:0]
-o_bus_rd_err
-
-o_irq_done
-o_irq_error
-```
-
-![dsp_image_top interface](docs/images/dsp_image_top_interface.png)
-
----
-
-## Internal Control Architecture
-
-The custom accelerator follows strict ownership rules.
-
-```text
-FSM
-    = defines WHEN an access or operation is legal
-
-Arbiter
-    = decodes host transactions
-    = enforces FSM permissions
-    = produces ACK / ERR
-
-Datapath
-    = reads Input Memory during EXEC
-    = drives the frozen Phase 1 DSP core
-    = writes dense results to Output Memory
-
-Memories
-    = passive storage
-```
-
-![Phase 2 internal architecture](docs/images/dsp_image_phase2_architecture.png)
-
-### Internal memory ownership
-
-```text
-LOAD:
-AXI wrapper
-    -> internal request bus
-    -> Arbiter
-    -> Input Memory write
-
-EXEC:
-Datapath
-    -> Input Memory read
-
-Datapath
-    -> Phase 1 DSP
-
-Datapath
-    -> Output Memory write
-
-READ:
-Output Memory
-    -> Arbiter
-    -> internal response bus
-    -> AXI wrapper
-```
-
-Input and output memories use synchronous registered read behavior.
-
----
-
-## Phase 2 FSM
-
-Main state flow:
+# Phase 2 Control FSM
 
 ```text
 IDLE
   |
-  | LOAD command
+  | LOAD
   v
 LOAD
   |
-  | START command
-  | o_datapath_start pulse
+  | START
   v
 EXEC
   |
@@ -368,76 +221,47 @@ EXEC
   v
 READ
   |
-  | STOP command
+  | STOP
   v
 IDLE
 ```
 
-Self-loop behavior:
+<p align="center">
+  <img src="docs/images/dsp_image_fsm.png" width="850" alt="Phase 2 FSM">
+</p>
+
+<p align="center">
+  <i>Phase 2 accelerator control FSM.</i>
+</p>
+
+Invalid commands, illegal accesses, or datapath errors enter a sticky `ERROR` state.
+
+The Datapath uses a separate internal FSM:
 
 ```text
-IDLE:
-load_cmd = 0          -> IDLE
-load_cmd = 1          -> LOAD
-
-LOAD:
-start_cmd = 0         -> LOAD
-start_cmd = 1         -> EXEC
-                         + o_datapath_start pulse
-
-EXEC:
-datapath_done = 0     -> EXEC
-datapath_done = 1     -> READ
-
-READ:
-stop_cmd = 0          -> READ
-stop_cmd = 1          -> IDLE
-
-ERROR:
-i_rst_n = 1           -> ERROR
-i_rst_n = 0           -> IDLE
+ST_IDLE
+  ->
+ST_PREP
+  ->
+ST_RUN
+  ->
+ST_COMMIT
+  ->
+ST_DONE
 ```
 
-Error behavior:
-
-```text
-ANY STATE:
-access_error = 1
-OR datapath_error = 1
-OR invalid command
-    -> ERROR
-
-GLOBAL:
-i_rst_n = 0
-    -> IDLE
-```
-
-FSM state outputs:
-
-| State | Input write allowed | Output read allowed | Busy | Done | Error |
-|---|---:|---:|---:|---:|---:|
-| IDLE | 0 | 0 | 0 | 0 | 0 |
-| LOAD | 1 | 0 | 1 | 0 | 0 |
-| EXEC | 0 | 0 | 1 | 0 | 0 |
-| READ | 0 | 1 | 1 | 1 | 0 |
-| ERROR | 0 | 0 | 0 | 0 | 1 |
-
-![Phase 2 FSM](docs/images/dsp_image_fsm.png)
-
-The datapath contains a separate internal execution FSM including `ST_PREP`, which applies one full active-high reset cycle to the frozen Phase 1 core before each frame.
+`ST_PREP` resets the Phase 1 core for one complete clock cycle before every frame.
 
 ---
 
-## AXI4-Lite Mapping
-
-Current AXI characteristics:
+# AXI4-Lite Interface
 
 ```text
 AXI data width       = 32 bits
 local address width  = 25 bits
 IP aperture          = 32 MiB
-pixel storage        = one 8-bit pixel per 32-bit address slot
-pixel stride         = 4 bytes
+pixel width          = 8 bits
+pixel address stride = 4 bytes
 DMA                  = not used
 ```
 
@@ -447,67 +271,85 @@ Input and CTRL writes require:
 WSTRB = 4'b0001
 ```
 
-On the current KR260 Linux path, `main.c` uses aligned `volatile uint8_t` stores for these writes.
+### Logical Address Map
 
-### Logical address map
-
-| Offset | Register / Region | Access |
+| Offset | Register / Region | Function |
 |---:|---|---|
-| `0x00000000` | CTRL | R/W command interface |
-| `0x00000004` | STATUS | Read |
-| `0x00000008` | INFO_WIDTH | Read |
-| `0x0000000C` | INFO_HEIGHT | Read |
-| `0x00000010` | INFO_THRESHOLD | Read |
-| `0x00100000` | INPUT_BASE | Write in LOAD |
-| `0x01100000` | OUTPUT_BASE | Read in READ |
+| `0x00000000` | CTRL | Command register |
+| `0x00000004` | STATUS | Accelerator status |
+| `0x00000008` | INFO_WIDTH | Image width |
+| `0x0000000C` | INFO_HEIGHT | Image height |
+| `0x00000010` | INFO_THRESHOLD | Threshold |
+| `0x00100000` | INPUT_BASE | Input frame |
+| `0x01100000` | OUTPUT_BASE | Dense edge output |
 
-Pixel address:
+---
 
-```text
-pixel_address = REGION_BASE + 4*k
-```
+# KR260 SoC Integration
 
-For the current KR260 design:
+The accelerator is integrated with:
 
 ```text
-physical accelerator base = 0xA0000000
-physical high address      = 0xA1FFFFFF
+zynq_ultra_ps_e_0
+ps8_0_axi_periph
+rst_ps8_0_99M
+dsp_image_axi_v1_0_0
 ```
 
-Therefore:
+<p align="center">
+  <img src="docs/images/kr260_vivado_block_design.png" width="950" alt="Vivado KR260 block design">
+</p>
 
-| Function | Physical address |
+<p align="center">
+  <i>Vivado PS-PL integration on the AMD Kria KR260.</i>
+</p>
+
+Physical accelerator aperture:
+
+```text
+Base address = 0xA0000000
+High address = 0xA1FFFFFF
+Range        = 32 MiB
+```
+
+<p align="center">
+  <img src="docs/images/kr260_address_map.png" width="900" alt="KR260 address map">
+</p>
+
+### Physical Addresses
+
+| Function | Address |
 |---|---:|
 | CTRL | `0xA0000000` |
 | STATUS | `0xA0000004` |
 | INFO_WIDTH | `0xA0000008` |
 | INFO_HEIGHT | `0xA000000C` |
 | INFO_THRESHOLD | `0xA0000010` |
-| Input pixel region | `0xA0100000` |
-| Dense output region | `0xA1100000` |
+| INPUT_BASE | `0xA0100000` |
+| OUTPUT_BASE | `0xA1100000` |
 
 ---
 
-## Dense Output Mapping
+# Dense Output Mapping
 
-FPGA Output Memory stores **only the final valid Sobel region**, densely in raster order.
+Only the final valid Sobel region is stored in FPGA Output Memory.
 
-For dense output index `k`:
+For dense index `k`:
 
 ```text
 x = 2 + (k % (IMAGE_WIDTH - 4))
 y = 2 + (k / (IMAGE_WIDTH - 4))
 ```
 
-The Python `expected.hex` reference is a full `W*H` frame, while FPGA `rtl_output.hex` contains only:
+For the current 64x64 frame:
 
 ```text
-(W - 4) * (H - 4)
+dense width   = 60
+dense height  = 60
+output pixels = 3600
 ```
 
-entries.
-
-Golden comparison therefore uses:
+Golden comparison uses:
 
 ```text
 golden_index = y * IMAGE_WIDTH + x
@@ -517,63 +359,149 @@ golden_index = y * IMAGE_WIDTH + x
 
 # Verification
 
-## Phase 2 simulation results
+The verification hierarchy is:
 
-The following tests were completed before board deployment:
+```text
+Python Golden Model
+        |
+        v
+Module-Level RTL
+        |
+        v
+Phase 1 Full-Frame RTL
+        |
+        v
+Phase 2 Integration
+        |
+        v
+AXI4-Lite End-to-End
+        |
+        v
+Post-Route Implementation
+        |
+        v
+Physical KR260
+```
 
-| Testbench / Component | Result |
+### Module-Level Results
+
+| Component | Evidence | Result |
+|---|---:|---|
+| Line Buffer | 186 checks | PASS |
+| Window Generator | 1,071 checks | PASS |
+| Median Filter | 618 checks | PASS |
+| Threshold | 8,204 checks | PASS |
+| Sobel + Gradient | Integrated golden comparison | COVERED |
+
+### Phase 2 / AXI Results
+
+| Test | Result |
 |---|---|
-| Input Memory TB | 12434 checks, 0 errors |
-| Output Memory TB | 7408 checks, 0 errors |
-| Datapath 512x512 | 516133 checks, 0 errors |
-| FSM TB | 28 checks, 0 errors |
-| Arbiter TB | 40 checks, 0 errors |
-| `dsp_image_top` single-frame 512x512 | PASS |
-| `dsp_image_top` single-frame 640x480 | PASS |
-| `dsp_image_top` multi-frame 512x512 | 2 frames, 0 errors |
-| AXI end-to-end multi-frame 64x64 | PASS, 24041 checks, 0 errors |
+| Input Memory | 12,434 checks, 0 errors |
+| Output Memory | 7,408 checks, 0 errors |
+| Datapath 512x512 | 516,133 checks, 0 errors |
+| FSM | 28 checks, 0 errors |
+| Arbiter | 40 checks, 0 errors |
+| Phase 2 512x512 | PASS |
+| Phase 2 640x480 | PASS |
+| Two-frame Phase 2 512x512 | PASS |
+| AXI two-frame 64x64 | 24,041 checks, 0 errors |
 
-The AXI regression also verifies:
+AXI error regression also verifies:
 
 ```text
 illegal write
-    -> SLVERR
-    -> sticky ERROR
-    -> active-low reset recovery
+    ->
+SLVERR
+    ->
+sticky ERROR
+    ->
+active-low reset recovery
 ```
-
-These are **simulation results** and do not by themselves prove physical FPGA timing or bit-exact board behavior.
 
 ---
 
-# KR260 Hardware Status
+# Post-Implementation Results
 
-Current hardware:
-
-```text
-Board        : AMD Kria KR260
-Device class : K26 Zynq UltraScale+ MPSoC
-Vivado       : 2022.2
-OS           : Ubuntu Linux on ARM PS
-HW frame     : 64x64
-Threshold    : 100
-```
-
-Confirmed hardware functionality:
+Target:
 
 ```text
-FPGA bitstream load     PASS
-FPGA manager            operating
-INFO register reads     PASS
-CTRL.LOAD               PASS
-Input MMIO writes       PASS
-CTRL.START              PASS
-READ/DONE reached       PASS
-Output MMIO reads       PASS
-CTRL.STOP               PASS
+Device   : xck26-sfvc784-2LV
+Vivado   : 2022.2
+PL clock : 100 MHz
+Period   : 10.000 ns
 ```
 
-Observed status examples:
+### Timing
+
+| Metric | Result |
+|---|---:|
+| WNS | `+0.322 ns` |
+| TNS | `0.000 ns` |
+| WHS | `+0.013 ns` |
+| THS | `0.000 ns` |
+| Setup failing endpoints | `0` |
+| Hold failing endpoints | `0` |
+| Timing | **MET** |
+
+Critical path:
+
+```text
+Source      : u_win1/p00_reg_reg[0]
+Destination : u_median/o_median_reg[4]
+
+Data delay  : 9.465 ns
+Logic delay : 4.478 ns
+Route delay : 4.987 ns
+Logic levels: 24
+Slack       : +0.322 ns
+```
+
+The Median sorting network is the dominant timing path but is **not a timing violation**.
+
+### Resource Utilization
+
+| Resource | Used | Available | Utilization |
+|---|---:|---:|---:|
+| CLB LUTs | 3,560 | 117,120 | 3.04% |
+| LUT as Logic | 3,341 | 117,120 | 2.85% |
+| LUT as Memory | 219 | 57,600 | 0.38% |
+| CLB Registers | 3,406 | 234,240 | 1.45% |
+| CARRY8 | 68 | 14,640 | 0.46% |
+| BRAM Tiles | 2 | 144 | 1.39% |
+| DSP slices | 0 | 1,248 | 0.00% |
+
+### Power Estimate
+
+```text
+Total on-chip power = 2.737 W
+Dynamic             = 2.437 W
+Static              = 0.301 W
+Junction temperature= 31.4 C
+Confidence          = Medium
+```
+
+These are Vivado estimates rather than board-level measurements.
+
+---
+
+# KR260 Hardware Evaluation
+
+Confirmed physical operations:
+
+```text
+FPGA bitstream load       PASS
+FPGA manager              operating
+INFO register reads       PASS
+CTRL.LOAD                 PASS
+Input MMIO writes         PASS
+CTRL.START                PASS
+READ/DONE reached         PASS
+Output MMIO reads         PASS
+CTRL.STOP                 PASS
+```
+
+Observed states:
 
 ```text
 0x01 = IDLE
@@ -581,94 +509,209 @@ Observed status examples:
 0x38 = READ + BUSY + DONE
 ```
 
-## Current hardware blocker
-
-The FPGA result on the real KR260 is **not yet bit-exact**.
-
-Observed with the same controlled 64x64 input:
+### Black-Frame Test
 
 ```text
-Frame 1:
-2 mismatches / 3600
-
-Frame 2:
-4 mismatches / 3600
+3600 / 3600 outputs correct
 ```
 
-Persistent mismatch positions:
+### Python Golden Consistency
 
-| Dense k | Coordinate | FPGA | Golden |
-|---:|---|---:|---:|
-| 2306 | (28,40) | `00` | `FF` |
-| 2774 | (16,48) | `00` | `FF` |
-
-Additional mismatches observed in the second sequential frame:
-
-| Dense k | Coordinate | FPGA | Golden |
-|---:|---|---:|---:|
-| 1948 | (30,34) | `FF` | `00` |
-| 2007 | (29,35) | `00` | `FF` |
-
-Therefore:
-
-> **Do not mark KR260 bit-exact verification as PASS until repeated runs reach `mismatch = 0`.**
-
-Immediate debug priorities:
-
-1. save and inspect post-route Timing Summary (`WNS`, `WHS`, unconstrained paths);
-2. reproduce the exact board input in XSim;
-3. verify the Python golden against the same `noisy.hex`;
-4. test deterministic black frames;
-5. inspect repeated-frame reset behavior (`ST_PREP`);
-6. audit BRAM request/data/valid timing;
-7. use ILA if the mismatch persists.
+```text
+4096 / 4096 values identical
+0 numerical differences
+```
 
 ---
 
-## ARM Linux Debug Software
+# Native ARM C Baseline
 
-`main.c` is the **KR260 Linux AXI MMIO controller**, not the CPU-only DSP baseline.
+The same Median-Sobel algorithm is implemented in native AArch64 C on the KR260 Cortex-A53.
 
-It accesses the accelerator through `/dev/mem` and `mmap()`.
+| Metric | Result |
+|---|---:|
+| Correct runs | `20 / 20` |
+| Mean | `4.817457 ms` |
+| Median | `4.820223 ms` |
+| Minimum | `4.753018 ms` |
+| Maximum | `4.918889 ms` |
+| Standard deviation | `0.040068 ms` |
 
-Build:
+---
 
-```bash
-gcc -O2 -std=c11 -Wall -Wextra main.c -o main
+# Current FPGA Debug Status
+
+The noisy 64x64 FPGA result is not yet consistently bit-exact.
+
+Across 20 repeated runs:
+
+```text
+Bit-exact runs = 5 / 20
+Failing runs   = 15 / 20
+Failure rate   = 75%
 ```
 
-Safe debug sequence:
+Every failing run contains exactly one mismatch:
 
-```bash
-sudo ./main --log debug.log --probe
-sudo ./main --log debug.log --load
-sudo ./main --log debug.log --write-frame noisy.hex
-sudo ./main --log debug.log --start
-sudo ./main --log debug.log --read-frame expected.hex rtl_output.hex
-sudo ./main --log debug.log --stop
+| Dense index | Coordinate | FPGA | Golden |
+|---:|---|---:|---:|
+| `2306` | `(28,40)` | `0x00` | `0xFF` |
+
+The failure is:
+
+> **intermittent across executions but spatially deterministic whenever it occurs.**
+
+Expected local Median output:
+
+```text
+A6 91 91
+91 88 88
+88 84 88
 ```
 
-Full workflow, after individual actions are known to be safe:
+Expected Sobel result:
 
-```bash
-sudo ./main --log debug.log --run \
-    noisy.hex \
-    expected.hex \
-    rtl_output.hex
+```text
+Gx = -39
+Gy = -65
+
+M = |-39| + |-65|
+  = 104
+
+104 >= 100
 ```
+
+Therefore:
+
+```text
+Expected output = 0xFF
+```
+
+Other locations with magnitude `104` produce correct FPGA outputs, so a simple global threshold bug is unlikely.
+
+The Median network is a plausible timing-sensitive candidate because it is the post-route critical path, but static timing analysis still passes.
+
+The root cause remains unconfirmed.
+
+---
+
+# FPGA Timing Measurement Status
+
+The current Linux userspace observation gives:
+
+```text
+START-to-DONE mean = 23.008 us
+```
+
+However, the architecture must feed all 4096 pixels.
+
+At 100 MHz:
+
+```text
+4096 cycles / 100 MHz
+= 40.96 us
+```
+
+This lower bound does not yet include:
+
+```text
+ST_PREP
+BRAM response
+pipeline fill
+pipeline flush
+final output commit
+READ transition
+```
+
+Therefore:
+
+```text
+23.008 us < 40.96 us
+```
+
+and the userspace measurement cannot currently represent the intended FPGA kernel latency.
+
+It is retained only as diagnostic data.
+
+Likewise:
+
+```text
+ARM C / FPGA ~= 209.40x
+```
+
+is **not a validated speedup result**.
+
+A valid FPGA latency measurement requires:
+
+- a hardware cycle counter; or
+- ILA-based clock-cycle observation.
+
+---
+
+# Standalone Benchmark
+
+The standalone benchmark package is located at:
+
+```text
+standalone_benchmark/
+```
+
+KR260 comparison:
+
+```text
+Python Golden
+vs
+ARM C
+vs
+FPGA RTL
+```
+
+Generated artifacts include:
+
+```text
+input.hex
+golden_full.hex
+golden_dense.hex
+arm_output.hex
+fpga_output.hex
+fpga_console.log
+result.json
+```
+
+Detailed setup and debugging instructions:
+
+[`standalone_benchmark/README.md`](standalone_benchmark/README.md)
+
+---
+
+# Orange Pi Benchmark
+
+Orange Pi support is prepared for:
+
+```text
+Python
+vs
+Native ARM C
+```
+
+Current status:
+
+```text
+software framework prepared
+physical-board validation pending
+```
+
+Orange Pi does not control the KR260 FPGA.
 
 ---
 
 # Repository Structure
 
-Recommended repository organization:
-
 ```text
 image-dsp-benchmark/
-│
+|
 ├── README.md
-├── project_progress.md
-│
+|
 ├── docs/
 │   ├── SPEC_PHASE1.md
 │   ├── SPEC_PHASE2.md
@@ -677,169 +720,100 @@ image-dsp-benchmark/
 │       ├── dsp_image_top_interface.png
 │       ├── kr260_system_architecture.png
 │       ├── dsp_image_phase2_architecture.png
-│       └── dsp_image_fsm.png
-│
+│       ├── dsp_image_fsm.png
+│       ├── kr260_vivado_block_design.png
+│       └── kr260_address_map.png
+|
 ├── python/
-│   ├── preprocess.py
-│   ├── noise.py
-│   ├── median.py
-│   └── sobel.py
-│
-├── c/
-│   └── ...
-│
+|
 ├── rtl/
-│   ├── image_dsp_top.v
-│   ├── line_buffer.v
-│   ├── window_3x3.v
-│   ├── median_3x3.v
-│   ├── sobel_3x3.v
-│   ├── gradient_mag.v
-│   ├── threshold.v
-│   ├── dsp_image_top.v
-│   ├── dsp_image_arbiter.v
-│   ├── dsp_image_fsm_ctrl.v
-│   ├── dsp_image_input_memory.v
-│   ├── dsp_image_datapath.v
-│   └── dsp_image_output_memory.v
-│
+|
 ├── tb/
+|
 ├── fpga/
 │   └── kr260/
+|
 ├── software/
 │   └── kr260/
 │       └── main.c
+|
+├── standalone_benchmark/
+│   ├── common/
+│   ├── kr260/
+│   ├── orangepi/
+│   ├── scripts/
+│   ├── static/
+│   ├── templates/
+│   └── README.md
+|
 ├── data/
 └── results/
-    └── kr260/
 ```
 
 ---
 
-# Benchmark Targets
+# Current Project Status
 
-The benchmark is intentionally separated into **kernel** and **end-to-end** measurements.
-
-| Case | Platform | Compute | Status |
-|---|---|---|---|
-| A | KR260 ARM PS | C DSP | Planned |
-| B | KR260 FPGA PL | RTL accelerator | Hardware debug |
-| C | Orange Pi Zero 3W | Python | Planned |
-| D | Orange Pi Zero 3W | C | Planned |
-
-Optional future portability work may target smaller FPGA boards such as EBAZ4205, but it is not the current hardware bring-up platform.
-
-FPGA metrics to report:
-
-```text
-kernel cycles
-kernel latency
-end-to-end latency
-FPS
-LUT
-FF
-BRAM
-DSP
-WNS
-WHS
-Fmax
-```
-
-Do not use userspace MMIO transfer time as a substitute for pure FPGA kernel latency.
+| Area | Status |
+|---|---|
+| Python golden model | ✅ COMPLETE |
+| Phase 1 streaming RTL | ✅ VERIFIED |
+| Multi-resolution RTL simulation | ✅ PASS |
+| Phase 2 accelerator | ✅ SIMULATION PASS |
+| AXI4-Lite regression | ✅ PASS |
+| Vivado implementation | ✅ COMPLETE |
+| Routing | ✅ COMPLETE |
+| 100 MHz timing | ✅ MET |
+| KR260 MMIO communication | ✅ OPERATIONAL |
+| KR260 black-frame test | ✅ PASS |
+| Native ARM C | ✅ 20/20 PASS |
+| Standalone KR260 benchmark | ✅ COMPLETE |
+| KR260 noisy-frame correctness | 🟠 DEBUGGING |
+| FPGA cycle-accurate latency | 🟠 NOT VALIDATED |
+| CPU-to-FPGA speedup | 🟠 NOT VALIDATED |
+| Orange Pi benchmark | ⏳ PENDING PHYSICAL TEST |
+| DMA / AXI4-Stream | 🔵 FUTURE WORK |
 
 ---
 
-# Development Roadmap
+# Locked Project Phase
 
 ```text
-M1  Python golden model
-    [DONE]
-
-        |
-        v
-
-M2  Phase 1 streaming RTL
-    [DONE]
-
-        |
-        v
-
-M3  Phase 2 custom accelerator core
-    [DONE IN SIMULATION]
-
-        |
-        v
-
-M4  AXI4-Lite wrapper + AXI regression
-    [DONE IN SIMULATION]
-
-        |
-        v
-
-M5  Vivado IP packaging + KR260 integration
-    [DONE]
-
-        |
-        v
-
-M6  ARM Linux MMIO control
-    [DONE AT INTERFACE LEVEL]
-
-        |
-        v
-
-M7  KR260 bit-exact + repeated-frame determinism
-    [CURRENT / BLOCKED]
-
-        |
-        v
-
-M8  Timing + utilization characterization
-    [PENDING REPORTS]
-
-        |
-        v
-
-M9  CPU-only C DSP baseline
-    [PLANNED]
-
-        |
-        v
-
-M10 CPU vs FPGA benchmark
-    [PLANNED]
-
-        |
-        v
-
-M11 Orange Pi / Web demonstration
-    [PLANNED]
+CURRENT PHASE:
+PHYSICAL FPGA DEBUG + VALID PERFORMANCE MEASUREMENT
 ```
+
+Immediate priorities:
+
+1. Resolve the intermittent KR260 mismatch.
+2. Obtain cycle-accurate FPGA START-to-DONE latency.
+3. Validate the Orange Pi ARM C benchmark.
+
+The current phase is complete only when:
+
+```text
+Repeated KR260 noisy-frame runs:
+mismatch = 0
+
+and
+
+FPGA latency:
+measured in PL clock cycles
+```
+
+Only then should a final CPU-to-FPGA speedup be reported.
+
+DMA, AXI4-Stream, larger physical frames, and further architectural optimization are future work.
 
 ---
 
 # Documentation
 
 - [`docs/SPEC_PHASE1.md`](docs/SPEC_PHASE1.md) — frozen Phase 1 algorithm and RTL contract
-- [`docs/SPEC_PHASE2.md`](docs/SPEC_PHASE2.md) — strict Phase 2 accelerator contract
-- [`project_progress.md`](project_progress.md) — current engineering handoff and hardware debug status
-- [`python/README.md`](python/README.md) — Python golden-model and verification workflow
-- `software/kr260/main.c` — ARM Linux AXI MMIO debug/controller program
-
----
-
-# Engineering Rules
-
-1. Phase 1 arithmetic and border behavior are frozen unless the specification is intentionally revised.
-2. Phase 2 custom RTL uses active-low `i_rst_n`; the Phase 1 core alone uses active-high `i_rst`.
-3. Raw AXI protocol logic remains inside the Vivado-generated AXI wrapper.
-4. The Arbiter owns host transaction decode and access enforcement.
-5. The FSM owns legal state transitions.
-6. The Datapath owns EXEC-side memory access and image processing.
-7. Output Memory stores only dense valid-region results.
-8. Pixel writes require `WSTRB = 4'b0001`.
-9. Simulation PASS does not imply physical timing closure.
-10. KR260 hardware verification is complete only after repeated identical frames produce `mismatch = 0`.
+- [`docs/SPEC_PHASE2.md`](docs/SPEC_PHASE2.md) — Phase 2 accelerator specification
+- [`python/README.md`](python/README.md) — Python golden-model workflow
+- `software/kr260/main.c` — Linux AXI MMIO controller
+- [`standalone_benchmark/README.md`](standalone_benchmark/README.md) — KR260 / Orange Pi benchmark setup and debugging
 
 ---
 
